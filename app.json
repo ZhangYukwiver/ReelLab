@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "ReelLab",
+    "slug": "reellab",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "scheme": "reellab",
+    "icon": "./build/icon.png",
+    "android": {
+      "usesCleartextTraffic": true
+    },
+    "ios": {
+      "infoPlist": {
+        "NSAllowsLocalNetworking": true,
+        "NSLocalNetworkUsageDescription": "连接电脑上的拆片工坊本机服务。"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "favicon": "./build/icon-48.png"
+    }
+  }
+}

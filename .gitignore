@@ -1,0 +1,13 @@
+node_modules/
+.DS_Store
+.expo/
+dist/
+web-build/
+release/
+release-*/
+.local-data/
+.local-data-test/
+.env*
+!.env.example
+npm-debug.log*
+

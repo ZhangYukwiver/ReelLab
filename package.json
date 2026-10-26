@@ -1,0 +1,127 @@
+{
+  "name": "reellab",
+  "version": "0.1.0",
+  "private": true,
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start",
+    "web": "expo start --web",
+    "server": "node server/server.mjs",
+    "build:icons": "node scripts/build-icons.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prebuild:web": "npm run build:icons",
+    "build:web": "expo export --platform web",
+    "desktop": "npm run build:web && electron desktop/main.mjs",
+    "desktop:pack": "npm run build:web && electron-builder --win dir --publish never",
+    "desktop:build": "npm run build:web && electron-builder --win nsis --publish never",
+    "desktop:build:mac": "npm run build:web && electron-builder --mac --publish never"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~57.0.8",
+    "electron-updater": "6.8.9",
+    "expo": "~57.0.11",
+    "expo-system-ui": "~57.0.2",
+    "fflate": "^0.8.2",
+    "js-yaml": "^4.3.2",
+    "lucide-react-native": "^1.30.0",
+    "playwright-core": "^1.62.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.86.2",
+    "react-native-svg": "15.15.4",
+    "react-native-web": "^0.21.2"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "electron": "^43.8.3",
+    "electron-builder": "^26.15.3",
+    "sharp": "^0.35.5",
+    "typescript": "~6.0.3",
+    "vitest": "^4.1.12"
+  },
+  "build": {
+    "appId": "com.zhangyukwiver.reellab",
+    "productName": "ReelLab",
+    "extraMetadata": {
+      "main": "desktop/main.mjs"
+    },
+    "directories": {
+      "output": "release"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "ZhangYukwiver",
+      "repo": "ReelLab",
+      "releaseType": "release"
+    },
+    "protocols": [
+      {
+        "name": "ReelLab",
+        "schemes": [
+          "reellab"
+        ]
+      }
+    ],
+    "electronDist": "node_modules/electron/dist",
+    "files": [
+      "desktop/**/*",
+      "server/**/*",
+      "dist/**/*",
+      "build/icon.png",
+      "node_modules/playwright-core/**/*",
+      "package.json",
+      "!**/*.test.mjs",
+      "!server/fixtures/**",
+      "!node_modules/!(playwright-core|fflate|electron-updater|builder-util-runtime|debug|ms|fs-extra|graceful-fs|jsonfile|universalify|js-yaml|argparse|sax|lazy-val|lodash.escaperegexp|lodash.isequal|semver|tiny-typed-emitter)/**"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/playwright-core/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "ReelLab-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "拆片工坊",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    },
+    "afterPack": "scripts/mac-adhoc-sign.cjs",
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.icns",
+      "artifactName": "ReelLab-${version}-${arch}.${ext}"
+    }
+  }
+}
