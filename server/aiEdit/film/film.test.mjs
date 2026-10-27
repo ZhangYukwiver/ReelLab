@@ -93,6 +93,37 @@ describe("film", () => {
     expect(plan.tracks[3].clips[0]).toMatchObject({ kind: "page", file: path.join(dir, "text/s4.html") });
   });
 
+  it("keeps back-to-back clips touching and file trims inside the file after rounding to ms", () => {
+    const media = new Map([
+      ["/m/p3.mp4", { name: "三道关", width: 1920, height: 1080, source: { type: "page", page: "p3/index.html" } }],
+      ["/m/p4.mp4", { name: "双塔", width: 1920, height: 1080, source: { type: "page", page: "p4/index.html" } }],
+      ["/m/v.mp4", { name: "实拍.mp4", width: 1920, height: 1080, source: { type: "local" } }],
+      ["/m/bgm.mp3", { name: "配乐.mp3", source: { type: "local" } }],
+    ]);
+    const clip = (id, filePath, start_us, duration_us) => ({ id, kind: filePath.endsWith(".mp3") ? "audio" : "video", path: filePath,
+      timeline: { start_us, duration_us }, source: { start_us: 0, duration_us } });
+    const project = {
+      name: "接缝", canvas: { width: 1920, height: 1080, fps: 30 },
+      tracks: [
+        { id: "v", track_type: "video", segments: [clip("a", "/m/p3.mp4", 26833333, 12133333), clip("b", "/m/p4.mp4", 38966666, 21166667), clip("c", "/m/v.mp4", 60133333, 2016667)] },
+        { id: "m", track_type: "audio", segments: [clip("m", "/m/bgm.mp3", 0, 161766667)] },
+      ],
+    };
+    const { html } = projectToFilm(project, {
+      mediaOf: (filePath) => media.get(filePath), srcFor: (item) => `assets/${item.name}`, pageSrc: (rel) => `pages/${rel}`, textSrc: (seg) => `text/${seg.id}.html`,
+    });
+    // 161.766667 秒的文件不能写成 #t=0,161.767（比文件长，播放器整片拒收）
+    expect(html).toContain('src="assets/配乐.mp3#t=0,161.766"');
+    const [pages] = filmToPlan(html, "/f").tracks;
+    const ends = pages.clips.map((c) => Math.round((c.at + c.time[1] - c.time[0]) * 1000));
+    const starts = pages.clips.map((c) => Math.round(c.at * 1000));
+    // 前一段的结尾就是后一段的开头：38.966667 秒那一帧不会落在 1 毫秒的缝里导出成黑帧
+    expect(ends.slice(0, -1)).toEqual(starts.slice(1));
+    expect(starts).toEqual([26833, 38967, 60133]);
+    // 文件片段截到素材末尾以内（2.016667 秒的文件往下取到 2.016）
+    expect(pages.clips[2].time).toEqual([0, 2.016]);
+  });
+
   it("ends a clip where the next one on its track starts (openfilm films overlap pages by a few ms)", () => {
     const html = `<meta name="viewport" content="width=1920, height=1080"><section>
       <iframe id="b" src="verse.html" at="7.479"></iframe><iframe id="a" src="intro.html"></iframe><iframe id="c" src="pre.html" at="26.168"></iframe>

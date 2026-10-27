@@ -209,9 +209,9 @@ async function startDesktopRuntime() {
   const server = await startServer({
     port: 0,
     dataDirectory,
-    // 网页片段、本机出片：Windows 用系统自带的 Edge（或 Chrome）无头画，应用的离屏窗口在 Windows 上画 canvas 会随机截到空白帧；
-    // Mac 和找不到浏览器时用应用自己的离屏窗口
-    filmBrowser: process.platform === "win32" && findBrowser() ? chromeProvider() : electronFilmProvider({ BrowserWindow }),
+    // 网页片段、本机出片：有 Edge / Chrome 就用它无头画。应用的离屏窗口画 canvas 会随机截到空白帧：Windows 上 10-25 实测，
+    // Mac 上 10-27 实测（整页 canvas 的动画约一半帧是空的，写 page 时还会报「重画一次就不一样」）。找不到浏览器时才用离屏窗口
+    filmBrowser: findBrowser() ? chromeProvider() : electronFilmProvider({ BrowserWindow }),
   });
   try {
     const rootDirectory = path.join(projectDirectory, "dist");

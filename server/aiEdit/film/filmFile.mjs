@@ -120,8 +120,10 @@ export function projectToFilm(project, { mediaOf, srcFor, pageSrc, textSrc }) {
         const value = segment[key];
         if (Array.isArray(value) ? value.length : value) drop(name);
       }
+      // film.html 只记到毫秒。开头和结尾按成片时间各取一次：相邻两段的接缝是同一个数取整，不会空出 1 毫秒
+      // （各自取开头和时长时，26.833333 + 12.133333 写成 26.833 + 12.133，下一段 38.966667 写成 38.967，落在缝里的那一帧导出是黑的）
       const at = seconds(segment.timeline.start_us);
-      const length = seconds(segment.timeline.duration_us);
+      const length = round3(seconds(segment.timeline.start_us + segment.timeline.duration_us) - at);
       const fade = segment.fade ? [seconds(segment.fade.in_duration_us), seconds(segment.fade.out_duration_us)] : null;
       const overrides = fade && fade[0] + fade[1] > 0 && fade[0] + fade[1] <= length ? [{ fade }] : undefined;
       const transform = segment.transform ?? {};
@@ -144,7 +146,10 @@ export function projectToFilm(project, { mediaOf, srcFor, pageSrc, textSrc }) {
       }
       if (page && Math.abs(speed - 1) > 1e-9) drop("网页片段的倍速");
       const from = segment.source ? seconds(segment.source.start_us) : 0;
-      const to = segment.source ? seconds(segment.source.start_us + segment.source.duration_us) : length;
+      // 截取的终点按成片里的长度倒推（网页片段不变速），片尾才落在上面取整好的结尾上。音视频文件再往下压到素材末尾以内：
+      // 四舍五入会把 161.766667 秒的文件写成 #t=0,161.767，比文件长，播放器整片拒收、导出失败
+      let to = round3(from + length * (page ? 1 : speed));
+      if (!page && segment.source) to = Math.min(to, Math.floor((segment.source.start_us + segment.source.duration_us) / 1000) / 1000);
       const volume = segment.volume ?? 1;
       if (segment.kind === "audio") {
         clips.push({ id: segment.id, src: srcFor(item, segment.path), at, time: [from, to], ...(volume !== 1 ? { volume } : {}),
