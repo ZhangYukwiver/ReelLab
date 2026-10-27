@@ -3,8 +3,8 @@
 // 窗口用单独的 session，不带应用的 cookie。
 // 用离屏渲染：Windows 上隐藏的普通窗口不出新帧，Page.captureScreenshot 会一直等不到（10-24 远端实测卡满 30 秒）；
 // 离屏窗口照常出帧，透明通道和 WebCodecs 编码两个平台都实测正常。
-// 但 Windows 上画 canvas 的网页会随机截到空白帧（10-25 远端实测：60 帧透明片段只有 12 帧有画面，关掉 2D canvas 的 GPU 加速才正常），
-// 所以 Windows 只在找不到 Edge / Chrome 时才用它（见 main.mjs）。
+// 但画 canvas 的网页会随机截到空白帧：Windows 上 10-25 远端实测 60 帧透明片段只有 12 帧有画面，Mac 上 10-27 实测整页 canvas 的动画约一半帧是空的
+// （关掉 2D canvas 的 GPU 加速能压到百分之一，仍有），所以两个平台都只在找不到 Edge / Chrome 时才用它（见 main.mjs）。
 
 export function electronFilmProvider({ BrowserWindow, partition = "reellab-film" }) {
   const windows = new Set();
