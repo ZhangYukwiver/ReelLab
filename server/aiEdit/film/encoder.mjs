@@ -1,10 +1,17 @@
+import { MASTER_SOURCE, TRUE_PEAK_DB } from "./master.mjs";
 import { openMovie } from "./mp4.mjs";
 
 // 编码在渲染浏览器里做（WebCodecs：H.264 + AAC），不带 ffmpeg。截好的帧（JPEG）用 base64 送进编码页，
-// 编好的数据块再取回来，由 mp4.mjs 装进文件。混音也在编码页里：OfflineAudioContext 按 film.html 的声音片段摆好再编 AAC。
+// 编好的数据块再取回来，由 mp4.mjs 装进文件。混音也在编码页里：OfflineAudioContext 按 film.html 的声音片段摆好，
+// 给旁白让位、响度归一化（master.mjs）以后再编 AAC。
 // 编码页要在安全上下文（127.0.0.1）里才有 WebCodecs，所以和网页片段一起从本机服务的 film 地址发出去。
 
+// 画质 → 每像素每帧多少比特。high 是原来写死的 0.15（1080p30 约 9.3 Mbps，162 秒 190MB）；standard 约 5 Mbps，
+// 和 x264 CRF 18 重压出来的体积差不多；small 约 2.5 Mbps
+export const QUALITY_BITS = { high: 0.15, standard: 0.08, small: 0.04 };
+
 export const ENCODER_PAGE = `<!doctype html><meta charset="utf-8"><title>encoder</title><script>
+${MASTER_SOURCE}
 const b64 = (bytes) => new Promise((done) => { const reader = new FileReader(); reader.onload = () => done(String(reader.result).slice(String(reader.result).indexOf(',') + 1)); reader.readAsDataURL(new Blob([bytes])); });
 const bytesOf = async (chunk) => { const data = new Uint8Array(chunk.byteLength); chunk.copyTo(data); return b64(data); };
 let video = null, out = [], config = null, failure = null, fps = 30, W = 0, H = 0;
@@ -37,39 +44,57 @@ window.enc = {
     video.close();
     return { chunks, description: config ? await b64(config) : null };
   },
-  async audio({ duration, sounds }) {
+  // sounds 里 role 是 voice 的是旁白，duck 的在旁白响时压低；loudness 给了就归一化到这个响度（LUFS），真峰值压在 ceiling（dBTP）以下
+  async audio({ duration, sounds, loudness = null, ceiling = -2 }) {
     const rate = 48000;
     const settings = { codec: 'mp4a.40.2', sampleRate: rate, numberOfChannels: 2, bitrate: 192000 };
     if (!sounds.length || !(await AudioEncoder.isConfigSupported(settings)).supported) return null;
-    const context = new OfflineAudioContext(2, Math.max(1, Math.ceil(duration * rate)), rate);
+    const length = Math.max(1, Math.ceil(duration * rate));
+    // 解出来的 AudioBuffer 哪个上下文都能用：同一个文件只解一次
+    const decoder = new OfflineAudioContext(2, 1, rate);
     const buffers = new Map();
-    const skipped = [];
-    for (const s of sounds) {
-      if (!buffers.has(s.src)) buffers.set(s.src, fetch(s.src).then((r) => r.arrayBuffer()).then((data) => context.decodeAudioData(data)).catch(() => null));
-      const buffer = await buffers.get(s.src);
-      if (!buffer) { skipped.push(s.src); continue; }
-      const speed = s.speed ?? 1, from = s.from ?? 0, to = Math.min(s.to ?? buffer.duration, buffer.duration), at = s.at ?? 0, volume = s.volume ?? 1;
-      if (!(to > from)) continue;
-      const node = context.createBufferSource();
-      node.buffer = buffer;
-      node.playbackRate.value = speed;
-      const gain = context.createGain();
-      const length = (to - from) / speed;
-      const [fadeIn, fadeOut] = Array.isArray(s.fade) ? s.fade : [0, 0];
-      gain.gain.setValueAtTime(fadeIn > 0 ? 0 : volume, at);
-      if (fadeIn > 0) gain.gain.linearRampToValueAtTime(volume, at + fadeIn);
-      if (fadeOut > 0) { gain.gain.setValueAtTime(volume, Math.max(at, at + length - fadeOut)); gain.gain.linearRampToValueAtTime(0, at + length); }
-      node.connect(gain).connect(context.destination);
-      node.start(at, from, to - from);
+    const skipped = new Set();
+    const mix = async (list) => {
+      const context = new OfflineAudioContext(2, length, rate);
+      for (const s of list) {
+        if (!buffers.has(s.src)) buffers.set(s.src, fetch(s.src).then((r) => r.arrayBuffer()).then((data) => decoder.decodeAudioData(data)).catch(() => null));
+        const buffer = await buffers.get(s.src);
+        if (!buffer) { skipped.add(s.src); continue; }
+        const speed = s.speed ?? 1, from = s.from ?? 0, to = Math.min(s.to ?? buffer.duration, buffer.duration), at = s.at ?? 0, volume = s.volume ?? 1;
+        if (!(to > from)) continue;
+        const node = context.createBufferSource();
+        node.buffer = buffer;
+        node.playbackRate.value = speed;
+        const gain = context.createGain();
+        const span = (to - from) / speed;
+        const [fadeIn, fadeOut] = Array.isArray(s.fade) ? s.fade : [0, 0];
+        gain.gain.setValueAtTime(fadeIn > 0 ? 0 : volume, at);
+        if (fadeIn > 0) gain.gain.linearRampToValueAtTime(volume, at + fadeIn);
+        if (fadeOut > 0) { gain.gain.setValueAtTime(volume, Math.max(at, at + span - fadeOut)); gain.gain.linearRampToValueAtTime(0, at + span); }
+        node.connect(gain).connect(context.destination);
+        node.start(at, from, to - from);
+      }
+      const done = await context.startRendering();
+      return [done.getChannelData(0), done.getChannelData(1)];
+    };
+    const under = sounds.filter((s) => s.role === 'duck');
+    const voice = sounds.filter((s) => s.role === 'voice');
+    const ducking = under.length > 0 && voice.length > 0;
+    // 要让位的轨单独混一遍，按旁白压好再加回来；没有要让位的还是一遍混完
+    const mixed = await mix(ducking ? sounds.filter((s) => s.role !== 'duck') : sounds);
+    if (ducking) {
+      const music = await mix(under);
+      duckUnder(music, await mix(voice), { rate });
+      for (let c = 0; c < 2; c++) for (let i = 0; i < length; i++) mixed[c][i] += music[c][i];
     }
-    const mixed = await context.startRendering();
+    const master = loudness === null ? null : normalizeLoudness(mixed, loudness, ceiling);
     const chunks = [];
     let described = null, broken = null;
     const encoder = new AudioEncoder({ output: (chunk, meta) => { if (meta?.decoderConfig?.description) described = meta.decoderConfig.description; chunks.push(chunk); }, error: (e) => { broken = e; } });
     encoder.configure(settings);
-    const left = mixed.getChannelData(0), right = mixed.getChannelData(1), step = 4800;
-    for (let start = 0; start < mixed.length; start += step) {
-      const count = Math.min(step, mixed.length - start);
+    const [left, right] = mixed, step = 4800;
+    for (let start = 0; start < length; start += step) {
+      const count = Math.min(step, length - start);
       const planes = new Float32Array(count * 2);
       planes.set(left.subarray(start, start + count), 0);
       planes.set(right.subarray(start, start + count), count);
@@ -80,7 +105,7 @@ window.enc = {
     await encoder.flush();
     encoder.close();
     if (broken) throw broken;
-    return { sampleRate: rate, channels: 2, bitrate: 192000, description: described ? await b64(described) : null, skipped,
+    return { sampleRate: rate, channels: 2, bitrate: 192000, description: described ? await b64(described) : null, skipped: [...skipped], master,
       chunks: await Promise.all(chunks.map(async (c) => ({ data: await bytesOf(c), samples: Math.round((c.duration ?? 21333) * rate / 1e6) }))) };
   },
 };
@@ -89,16 +114,17 @@ window.enc = {
 const FRAMES_PER_KEY = 2; // 秒
 
 /**
- * 一路视频（+ 混音）编进 MP4。frames(i) 按顺序给第 i 帧的 JPEG；sounds 是 film.html 的声音片段（timeline 的 __filmSounds）。
- * encoderTab 是 openTab 打开的编码页。回音频里没解出声音的文件。
+ * 一路视频（+ 混音）编进 MP4。frames(i) 按顺序给第 i 帧的 JPEG；sounds 是 film.html 的声音片段（timeline 的 __filmSounds），
+ * 可以带 role（voice 旁白 / duck 给旁白让位）。loudness 是成片响度（LUFS，null 不处理），bitsPerPixel 定码率。
+ * encoderTab 是 openTab 打开的编码页。回音频里没解出声音的文件和母带处理的结果（{ before, after, peak }）。
  */
-export async function encodeMp4({ encoderTab, file, width, height, fps, count, frame, sounds = [], onProgress = () => undefined, signal }) {
+export async function encodeMp4({ encoderTab, file, width, height, fps, count, frame, sounds = [], loudness = null, bitsPerPixel = QUALITY_BITS.high, onProgress = () => undefined, signal }) {
   // H.264 宽高要是偶数
   const evenWidth = width - (width % 2);
   const evenHeight = height - (height % 2);
   const movie = await openMovie(file, { container: "mp4" });
   try {
-    const bitrate = Math.min(40e6, Math.max(2e6, evenWidth * evenHeight * fps * 0.15));
+    const bitrate = Math.min(40e6, Math.max(2e6, evenWidth * evenHeight * fps * bitsPerPixel));
     await encoderTab.evaluate(`enc.start(${JSON.stringify({ width: evenWidth, height: evenHeight, fps, bitrate })})`);
     const timescale = fps * 1000;
     const write = async (chunks) => { for (const chunk of chunks) await movie.writeVideo(Buffer.from(chunk.data, "base64"), { key: chunk.key, duration: 1000 }); };
@@ -115,13 +141,13 @@ export async function encodeMp4({ encoderTab, file, width, height, fps, count, f
     const { chunks, description } = await encoderTab.evaluate("enc.finish()");
     await write(chunks);
     if (!description) throw new Error("编码器没给出 H.264 的参数");
-    const audio = sounds.length ? await encoderTab.evaluate(`enc.audio(${JSON.stringify({ duration: count / fps, sounds })})`) : null;
+    const audio = sounds.length ? await encoderTab.evaluate(`enc.audio(${JSON.stringify({ duration: count / fps, sounds, loudness, ceiling: TRUE_PEAK_DB })})`) : null;
     if (audio?.chunks.length) for (const chunk of audio.chunks) await movie.writeAudio(Buffer.from(chunk.data, "base64"), chunk.samples);
     await movie.close(
       { codec: "avc1", width: evenWidth, height: evenHeight, timescale, description: Buffer.from(description, "base64") },
       audio?.chunks.length && audio.description ? { ...audio, description: Buffer.from(audio.description, "base64") } : null,
     );
-    return { silent: sounds.length > 0 && !audio?.chunks.length, skipped: audio?.skipped ?? [] };
+    return { silent: sounds.length > 0 && !audio?.chunks.length, skipped: audio?.skipped ?? [], master: audio?.master ?? null };
   } catch (error) {
     await movie.abort();
     throw error;

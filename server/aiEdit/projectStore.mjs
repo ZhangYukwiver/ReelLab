@@ -264,18 +264,25 @@ const CropSettings = model([
   ["lower_left_x", Unit, 0], ["lower_left_y", Unit, 1], ["lower_right_x", Unit, 1], ["lower_right_y", Unit, 1],
 ]);
 
+// 出 MP4 的两项也记在画布上（撤销、存档跟着走）：loudness 成片响度（LUFS，null 不处理），quality 画质；没设过的不写
 const Canvas = model([
   ["width", strictInt({ ge: 16, le: 7680 }), 1920],
   ["height", strictInt({ ge: 16, le: 7680 }), 1080],
   ["fps", strictInt({ ge: 1, le: 120 }), 30],
+  ["loudness", nullable(literal([-14, -15, -16])), undefined],
+  ["quality", literal(["high", "standard", "small"]), undefined],
 ]);
 
 const ProjectCreate = model([["name", Label, REQUIRED], ["canvas", Canvas, () => ({ width: 1920, height: 1080, fps: 30 })]]);
 const ProjectUpdate = model([["name", nullable(Label), null]]);
 
 const TRACK_TYPES = ["video", "audio", "text", "sticker", "effect", "filter"];
-const TrackCreate = model([["track_type", literal(TRACK_TYPES), REQUIRED], ["name", nullable(Label), null], ["mute", strictBool, false]]);
-const TrackUpdate = model([["name", nullable(Label), null], ["mute", nullable(strictBool), null]]);
+// narration：这条是旁白；duck：旁白响的时候这条自动压低（出 MP4 时混音用，剪映草稿不管）
+const TrackCreate = model([
+  ["track_type", literal(TRACK_TYPES), REQUIRED], ["name", nullable(Label), null], ["mute", strictBool, false],
+  ["narration", strictBool, false], ["duck", strictBool, false],
+]);
+const TrackUpdate = model([["name", nullable(Label), null], ["mute", nullable(strictBool), null], ["narration", nullable(strictBool), null], ["duck", nullable(strictBool), null]]);
 const TrackOrder = model([["track_ids", list(str({ min: 1, max: 64 }), { min: 1, max: 100 }), REQUIRED]]);
 
 const MediaSegmentCreate = model([
@@ -916,6 +923,8 @@ export class ProjectStore {
         track_type: body.track_type,
         name: body.name || body.track_type[0].toUpperCase() + body.track_type.slice(1),
         mute: body.mute,
+        ...(body.narration ? { narration: true } : {}),
+        ...(body.duck ? { duck: true } : {}),
         segments: [],
       };
       return this.#touch(project, { tracks: [...project.tracks, track] });

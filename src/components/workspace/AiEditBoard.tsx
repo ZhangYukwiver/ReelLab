@@ -491,7 +491,7 @@ export function Board(props: BoardProps) {
             </View>
             {/* 放得下就常驻一块属性面板（没选片段时是草稿参数）；放不下时选中片段才在画面右边弹出详情卡 */}
             {rowWidth - sideWidth >= ROOMY
-              ? <View style={{ width: INSPECTOR, minHeight: 0, flexDirection: "row" }}>{selected ? <ClipCard width={INSPECTOR} projectNow={projectNow} /> : <DraftPanel project={project} duration={duration} status={status.text} />}</View>
+              ? <View style={{ width: INSPECTOR, minHeight: 0, flexDirection: "row" }}>{selected ? <ClipCard width={INSPECTOR} projectNow={projectNow} /> : <DraftPanel project={project} duration={duration} status={status.text} blocked={canvasBlocked} onOutput={(args) => { void flushPending().then(() => runEdit("set_canvas", args)); }} />}</View>
               : <ClipCard width={Math.round(Math.min(280, Math.max(196, (rowWidth - sideWidth) * 0.42)))} projectNow={projectNow} />}
           </View>
           <Timeline height={timelineHeight(project?.tracks.length ?? 0, height)} />
@@ -537,8 +537,13 @@ function OutputChip({ output, filmUrl, onOutput }: {
   </WebTitle>;
 }
 
-/** 没选片段时属性面板里放草稿参数，和剪辑软件一样；剪映草稿的状态也在这儿说全 */
-function DraftPanel({ project, duration, status }: { project: EditProject | null; duration: number; status: string }) {
+const LOUDNESS_OPTIONS = [{ label: "关", value: "off" }, { label: "-14", value: "-14" }, { label: "-15", value: "-15" }, { label: "-16", value: "-16" }];
+const QUALITY_OPTIONS = [{ label: "高", value: "high" }, { label: "标准", value: "standard" }, { label: "小", value: "small" }];
+
+/** 没选片段时属性面板里放草稿参数，和剪辑软件一样；剪映草稿的状态也在这儿说全。本机出 MP4 的响度和画质也在这儿改 */
+function DraftPanel({ project, duration, status, blocked, onOutput }: {
+  project: EditProject | null; duration: number; status: string; blocked: string | null; onOutput: (args: { loudness?: string; quality?: string }) => void;
+}) {
   const clips = project?.tracks.reduce((sum, track) => sum + track.segments.length, 0) ?? 0;
   const rows: Array<[string, string]> = project ? [
     ["名称", project.name || "未命名"],
@@ -553,6 +558,18 @@ function DraftPanel({ project, duration, status }: { project: EditProject | null
       <Text style={styles.draftLabel}>{label}</Text>
       <Text selectable numberOfLines={2} style={styles.draftValue}>{value}</Text>
     </View>) : <Text style={kit.muted}>还没有时间线，在左边跟 AI 说想剪成什么样。</Text>}
+    {project ? <WebTitle title={blocked ?? "本机出 MP4 时的成片响度（LUFS，真峰值压在 -2 dBTP 以下）和画质；剪映草稿不受影响"}>
+      <View pointerEvents={blocked ? "none" : "auto"} style={[styles.draftOutput, blocked ? styles.disabled : null]}>
+        <View style={styles.draftRow}>
+          <Text style={styles.draftLabel}>响度</Text>
+          <Segmented small options={LOUDNESS_OPTIONS} value={project.canvas.loudness ? String(project.canvas.loudness) : "off"} onChange={(value) => onOutput({ loudness: value })} />
+        </View>
+        <View style={styles.draftRow}>
+          <Text style={styles.draftLabel}>画质</Text>
+          <Segmented small options={QUALITY_OPTIONS} value={project.canvas.quality ?? "standard"} onChange={(value) => onOutput({ quality: value })} />
+        </View>
+      </View>
+    </WebTitle> : null}
     <View style={styles.draftRow}>
       <Text style={styles.draftLabel}>剪映</Text>
       <Text style={styles.draftValue}>{status}</Text>
@@ -638,6 +655,7 @@ const styles = StyleSheet.create({
   draftRow: { flexDirection: "row", gap: 10 },
   draftLabel: { width: 34, color: color.textMuted, fontFamily: font.body, fontSize: 12, lineHeight: 18 },
   draftValue: { flex: 1, minWidth: 0, color: color.text, fontFamily: font.body, fontSize: 12, lineHeight: 18 },
+  draftOutput: { gap: 6 },
   draftHint: { marginTop: "auto" },
   conflict: { gap: 8, padding: 10, borderWidth: 1, borderColor: color.border, borderRadius: radius.medium, backgroundColor: color.surface },
   conflictText: { color: color.text, fontFamily: font.body, fontSize: 12, lineHeight: 18 },

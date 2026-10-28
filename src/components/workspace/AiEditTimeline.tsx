@@ -871,13 +871,15 @@ export function Timeline({ height }: { height: number }) {
       if (await now.runEdits(edits) && refused && "refused" in refused) now.toast(`有的片段没裁：${refused.refused}`);
     })();
   };
-  const toggleMute = useCallback((trackId: string) => {
+  // 静音、旁白、让位都是轨道上的开关：一次翻一项
+  const toggleTrack = useCallback((trackId: string, key: "mute" | "narration" | "duck") => {
     void (async () => {
       await latest.current.flushHeld();
       const track = latest.current.project?.tracks.find((one) => one.id === trackId);
-      if (track) await latest.current.runEdit("update_track", { track_id: trackId, mute: !track.mute });
+      if (track) await latest.current.runEdit("update_track", { track_id: trackId, [key]: !track[key] });
     })();
   }, []);
+  const toggleMute = useCallback((trackId: string) => toggleTrack(trackId, "mute"), [toggleTrack]);
   const moveTrack = (trackId: string, place: "top" | "bottom") => {
     void (async () => {
       await latest.current.flushHeld();
@@ -979,7 +981,13 @@ export function Timeline({ height }: { height: number }) {
     const reason = now.editable ? null : now.notEditableReason ?? BUSY;
     const sounds = track.track_type === "video" || track.track_type === "audio";
     return [
-      ...(sounds ? [{ id: "mute", label: track.mute ? "取消静音" : "这条轨道静音", disabled: reason, onSelect: () => toggleMute(trackId) }, { id: "sep-mute", separator: true as const }] : []),
+      ...(sounds ? [
+        { id: "mute", label: track.mute ? "取消静音" : "这条轨道静音", disabled: reason, onSelect: () => toggleMute(trackId) },
+        // 出 MP4 时混音用：标成旁白的响起来，设了让位的自动压低
+        { id: "narration", label: track.narration ? "取消旁白标记" : "标成旁白", disabled: reason, onSelect: () => toggleTrack(trackId, "narration") },
+        ...(track.narration ? [] : [{ id: "duck", label: track.duck ? "不再给旁白让位" : "旁白响时压低这条（出 MP4 时）", disabled: reason, onSelect: () => toggleTrack(trackId, "duck") }]),
+        { id: "sep-mute", separator: true as const },
+      ] : []),
       pasteItem(reason),
       { id: "sep-track", separator: true },
       ...orderItems(trackId, reason),
@@ -1333,13 +1341,14 @@ const TrackRow = memo(function TrackRow({ track, pxPerUs, width, mediaById, medi
   const reaches = useMemo(() => new Map(track.segments.flatMap((segment) => ("transition" in segment && segment.transition ? [[segment.id, transitionReach(track.segments, segment)] as const] : []))), [track.segments]);
   const muteTitle = blocked ?? (track.mute ? "这条轨道静音了，点一下恢复声音" : "点一下把这条轨道静音");
   return <div style={{ position: "relative", zIndex: lifted ? 50 : undefined, display: "flex", flexShrink: 0, height: ROW, boxSizing: "border-box", borderBottom: `1px solid ${color.borderSoft}` }}>
-    <div data-track-head={track.id} title={`${label}${main ? " · 主轨（主轨磁吸开着，片段首尾相接）" : ""}：右键可以调整层级${sounds ? "、静音" : ""}`} style={{
+    <div data-track-head={track.id} title={`${label}${main ? " · 主轨（主轨磁吸开着，片段首尾相接）" : ""}${track.narration ? " · 旁白" : track.duck ? " · 旁白响时压低" : ""}：右键可以调整层级${sounds ? "、静音、旁白和让位" : ""}`} style={{
       position: "sticky", left: 0, zIndex: 5, width: HEAD, flexShrink: 0, display: "flex", alignItems: "center", gap: 5, paddingLeft: 8, paddingRight: 4, boxSizing: "border-box",
       borderRight: `1px solid ${color.border}`, ...solid,
     }}>
       <Icon size={12} color={color.textMuted} />
       <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: color.textSecondary, fontFamily: font.body, fontSize: 11 }}>{label}</span>
       {main ? <Magnet size={10} color={color.accent} /> : null}
+      {sounds && (track.narration || track.duck) ? <span style={{ flexShrink: 0, color: color.textMuted, fontFamily: font.body, fontSize: 10 }}>{track.narration ? "旁白" : "让位"}</span> : null}
       {track.kind === "subtitle" ? <button
         type="button"
         aria-label="在播放头处添加字幕"

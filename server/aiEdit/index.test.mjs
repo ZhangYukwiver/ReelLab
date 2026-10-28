@@ -166,6 +166,7 @@ function fakeSkills(initial = []) {
       if (!registry.has(id)) throw missing();
       return { ...registry.get(id) };
     }),
+    pageFiles: logged("pageFiles", () => null),
     install: logged("install", (source) => {
       const skill = skillEntry({ id: `s${registry.size + 1}`, name: path.basename(source), root: source, dir: source, source: { type: "folder", path: source } });
       registry.set(skill.id, skill);
@@ -1566,9 +1567,17 @@ describe("AI edit redo, history and batches on the board", () => {
     expect(state.project.tracks.find((track) => track.id === music).mute).toBe(true);
     expect(state.session.undo).toEqual({ label: "静音“配乐”", kind: "edit" });
     expect((await edit("update_track", { track_id: music, mute: false })).body.session.undo).toEqual({ label: "取消“配乐”的静音", kind: "edit" });
-    for (const args of [{ track_id: music, name: "背景音乐", mute: true }, { track_id: music }, { track_id: music, mute: "yes" }]) {
+    for (const args of [{ track_id: music, name: "背景音乐", mute: true }, { track_id: music }, { track_id: music, mute: "yes" }, { track_id: music, duck: true, narration: true }]) {
       expect(await edit("update_track", args)).toMatchObject({ status: 422, body: { error: "edit_not_allowed" } });
     }
+    // 旁白、让位一次开关一项；属性面板只改得了出片的响度和画质
+    state = (await edit("update_track", { track_id: music, duck: true })).body;
+    expect(state.project.tracks.find((track) => track.id === music).duck).toBe(true);
+    expect(state.session.undo).toEqual({ label: "让“配乐”给旁白让位", kind: "edit" });
+    state = (await edit("set_canvas", { loudness: "-15", quality: "small" })).body;
+    expect(state.project.canvas).toMatchObject({ width: created.canvas.width, loudness: -15, quality: "small" });
+    expect(state.session.undo).toEqual({ label: "改了出片设置", kind: "edit" });
+    expect(await edit("set_canvas", { width: 640 })).toMatchObject({ status: 422, body: { error: "edit_not_allowed" } });
 
     // 列表越靠后越在上层
     expect((await order([text, pip, music, main])).session.undo).toEqual({ label: "把“主画面”移到最上层", kind: "edit" });
@@ -1585,6 +1594,8 @@ describe("AI edit redo, history and batches on the board", () => {
       `复制了视频“海边.mp4”（clip_id ${clip}），新的一段是 clip_id ${onMain.id}，放在“主画面”（track_id ${main}）上，0 秒开始`,
       `把“配乐”（track_id ${music}）静音了`,
       `取消了“配乐”（track_id ${music}）的静音`,
+      `让“配乐”（track_id ${music}）在旁白响时自动压低`,
+      "把本机出 MP4 的设置改成了成片响度 -15 LUFS，画质小体积",
       `把“主画面”（track_id ${main}）移到了最上层`,
       `把“配乐”（track_id ${music}）移到了最下层`,
       "调整了轨道的上下层顺序",
@@ -2056,6 +2067,8 @@ describe.runIf(existsSync(path.join(HERE, "skills.mjs")))("AI edit skills with t
       "writeFileSync(path.join(process.env.REELLAB_WORK_DIR, \"said.txt\"), process.argv[2]);",
       "console.log(\"说了\", process.argv[2]);",
     ].join("\n"));
+    await mkdir(path.join(folder, "page-files"));
+    await writeFile(path.join(folder, "page-files", "engine.js"), "window.engine = 1;");
     const chats = [];
     const replies = [
       toolReply([{ name: "read_skill", args: { skill: "示例技能" } }]),
@@ -2068,15 +2081,21 @@ describe.runIf(existsSync(path.join(HERE, "skills.mjs")))("AI edit skills with t
     };
     const { call, until, waitIdle } = await start({ realSkills: true, fetchImpl });
     const installed = await call("/v1/ai-edit/skills", { method: "POST", body: { source: folder } });
-    expect(installed).toMatchObject({ status: 201, body: { installed: [{ name: "示例技能", description: "把一句话写进工作目录", root: folder, dir: folder, enabled: true, trustCommands: false, problem: null }] } });
+    expect(installed).toMatchObject({ status: 201, body: { installed: [{ name: "示例技能", description: "把一句话写进工作目录", enabled: true, trustCommands: false, problem: null }] } });
     const [skill] = installed.body.installed;
+    // 本机文件夹整份拷进应用，技能用的是拷进来的那份
+    expect(skill.root).not.toBe(folder);
+    expect(skill.dir).toBe(skill.root);
     expect((await call("/v1/ai-edit/skills")).body.skills).toEqual([expect.objectContaining({ id: skill.id, source: { type: "folder", path: folder } })]);
 
     const { session } = (await call("/v1/ai-edit/sessions", { method: "POST", body: {} })).body;
     await call(`/v1/ai-edit/sessions/${session.id}/messages`, { method: "POST", body: { text: "用技能说句你好", config: CONFIG } });
     const ask = await until(async () => (await call(`/v1/ai-edit/sessions/${session.id}`)).body.session.streaming?.command, Boolean, "command question");
-    expect(ask).toMatchObject({ skill: "示例技能", skill_id: skill.id, command: ["node", "scripts/say.mjs", "你好"], cwd: folder, background: false });
-    expect(lastToolResult(chats[1])).toMatchObject({ ok: true, kind: "text", lines: expect.stringContaining("# 用法"), skill_dir: folder, package_root: folder, work_dir: skill.work });
+    expect(ask).toMatchObject({ skill: "示例技能", skill_id: skill.id, command: ["node", "scripts/say.mjs", "你好"], cwd: skill.root, background: false });
+    expect(lastToolResult(chats[1])).toMatchObject({
+      ok: true, kind: "text", lines: expect.stringContaining("# 用法"), skill_dir: skill.root, package_root: skill.root, work_dir: skill.work,
+      page_files: { ref: `../_skills/${skill.id}/`, files: ["engine.js"] },
+    });
     await call(`/v1/ai-edit/sessions/${session.id}/command/${ask.id}`, { method: "POST", body: { allow: true } });
     await waitIdle(session.id);
     const ran = lastToolResult(chats[2]);
@@ -2084,9 +2103,10 @@ describe.runIf(existsSync(path.join(HERE, "skills.mjs")))("AI edit skills with t
     expect(`${ran.stdout_head}${ran.stdout_tail}`).toContain("说了 你好");
     expect(await readFile(path.join(skill.work, "said.txt"), "utf8")).toBe("你好");
 
-    // 本机文件夹只去掉登记，文件留着
+    // 删掉的是拷进来的那份，源文件夹不动
     expect((await call(`/v1/ai-edit/skills/${encodeURIComponent(skill.id)}`, { method: "DELETE" })).body).toEqual({ removed: true });
     expect((await call("/v1/ai-edit/skills")).body.skills).toEqual([]);
+    expect(existsSync(skill.root)).toBe(false);
     expect(existsSync(path.join(folder, "SKILL.md"))).toBe(true);
   }, 30_000);
 });

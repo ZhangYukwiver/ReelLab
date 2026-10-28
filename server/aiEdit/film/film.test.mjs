@@ -1,7 +1,9 @@
+import { createWriteStream } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { unzipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 
 import { probeMedia } from "../media.mjs";
@@ -9,6 +11,7 @@ import { boxOf, filmToPlan, projectToFilm, transformOf } from "./filmFile.mjs";
 import { openMovie } from "./mp4.mjs";
 import { MAX_PAGE_SECONDS, pageFrames } from "./pages.mjs";
 import { createFilmFiles } from "./serve.mjs";
+import { createFilmStudio } from "./studio.mjs";
 
 const temp = () => mkdtemp(path.join(tmpdir(), "film-"));
 
@@ -131,6 +134,28 @@ describe("film", () => {
     const plan = filmToPlan(html, "/f");
     expect(plan.tracks.map((track) => track.type)).toEqual(["audio", "video"]);
     expect(plan.tracks[1].clips.map((clip) => [clip.name, clip.at, clip.until])).toEqual([["intro.html", 0, 7.479], ["verse.html", 7.479, 26.168], ["pre.html", 26.168, undefined]]);
+  });
+
+  it("packs the shared folders a page refers to next to it in the project zip", async () => {
+    const root = await temp();
+    const put = async (rel, text) => { await mkdir(path.dirname(path.join(root, rel)), { recursive: true }); await writeFile(path.join(root, rel), text); };
+    await put("pages/abc/index.html", '<script src="../_skills/vibe/engine.js"></script><script src="../_vibe/timing.js"></script><script src="../_skills/../../secret.json"></script>');
+    await put("pages/_skills/vibe/engine.js", "engine");
+    await put("pages/_skills/vibe/img/cloud.jpg", "jpg");
+    await put("pages/_skills/other/x.js", "别的技能的");
+    await put("pages/_vibe/timing.js", "timing");
+    await put("secret.json", "{}");
+    const item = { id: "m1", name: "P01", width: 1920, height: 1080, source: { type: "page", page: "abc/index.html" } };
+    const studio = createFilmStudio({ root, library: { idForPath: () => "m1", get: () => item }, provider: null, getOrigin: () => "" });
+    const project = { name: "共用文件", canvas: { width: 1920, height: 1080, fps: 30 }, tracks: [{ id: "t1", track_type: "video", segments: [
+      { id: "s1", kind: "video", path: "/m/p.mp4", timeline: { start_us: 0, duration_us: 2_000_000 }, source: { start_us: 0, duration_us: 2_000_000 } },
+    ] }] };
+    const file = path.join(root, "out.zip");
+    await studio.exportZip(project, createWriteStream(file));
+    const names = Object.keys(unzipSync(await readFile(file))).sort();
+    expect(names).toEqual([
+      "共用文件/film.html", "共用文件/pages/_skills/vibe/engine.js", "共用文件/pages/_skills/vibe/img/cloud.jpg", "共用文件/pages/_vibe/timing.js", "共用文件/pages/abc/index.html",
+    ]);
   });
 
   it("serves pages with the host prelude, only under its key and areas", async () => {
