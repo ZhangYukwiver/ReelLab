@@ -588,6 +588,9 @@ describe.runIf(["projectStore.mjs", "media.mjs"].every((name) => existsSync(path
       expect(subtitles.clip_count).toBe(2);
       await ok("remove_subtitles", { track_id: subtitles.track_id });
       await ok("update_track", { track_id: audio, mute: true, name: "背景音乐" });
+      await ok("update_track", { track_id: audio, duck: true });
+      const voice = (await ok("create_track", { track_type: "audio", name: "旁白", narration: true })).track_id;
+      await ok("set_canvas", { loudness: "-15", quality: "small" });
       const timeline = await ok("get_timeline", {});
       await ok("reorder_tracks", { track_ids: [...timeline.tracks.map((track) => track.track_id)].reverse() });
       await ok("delete_track", { track_id: sticker });
@@ -598,8 +601,12 @@ describe.runIf(["projectStore.mjs", "media.mjs"].every((name) => existsSync(path
       expect(exported).toHaveLength(1);
 
       const final = await store.getProject(project.id);
-      expect(final).toMatchObject({ name: "工具全测改名", canvas: { width: 1920, height: 1080, fps: 30 } });
-      expect(final.tracks.map((track) => track.name)).toEqual(["滤镜", "特效", "标题", "背景音乐", "画中画", "主画面"]);
+      expect(final).toMatchObject({ name: "工具全测改名", canvas: { width: 1920, height: 1080, fps: 30, loudness: -15, quality: "small" } });
+      expect(final.tracks.map((track) => track.name)).toEqual(["旁白", "滤镜", "特效", "标题", "背景音乐", "画中画", "主画面"]);
+      expect(final.tracks.find((track) => track.id === audio)).toMatchObject({ mute: true, duck: true });
+      expect(final.tracks.find((track) => track.id === voice)).toMatchObject({ narration: true });
+      await ok("set_canvas", { loudness: "off" });
+      expect((await store.getProject(project.id)).canvas).toMatchObject({ loudness: null, quality: "small" });
       const summary = timelineSummary(final, media);
       expect(summary.duration).toBe(4);
       expect(summary.tracks.at(-1).clips[0]).toMatchObject({ media_id: clip, source_start: 0.5, fit: "cover", effects: ["_1998"], transition: { type: "叠化", duration: 0.4 }, background_filling: "blur", crop: true });
@@ -1332,6 +1339,7 @@ function skillManager(active, overrides = {}) {
     }),
     job: record("job", (id, { stop }) => ({ job_id: id, status: stop ? "stopped" : "running" })),
     environment: record("environment", { os: "darwin", node: { path: "/usr/local/bin/node", version: "v22.0.0", bundled: false }, npm: true, python: null, ffmpeg: null, chrome: null }),
+    pageFiles: record("pageFiles", (skill) => (skill.id === "b" ? { ref: "../_skills/b/", files: ["engine.js"] } : null)),
     ...overrides,
   };
   return { manager, calls, registry };
@@ -1407,7 +1415,7 @@ describe("AI edit skills", () => {
     // 名字重了只认 id；快照里没有的（没启用、删掉了）都找不到
     expect((await run("read_skill", { skill: "同名" })).result).toMatchObject({ ok: false, code: "skill_not_found" });
     expect(called("readFile")).toHaveLength(2);
-    expect((await run("read_skill", { skill: "b" })).result).toMatchObject({ ok: true, package_root: SKILL_ROOT });
+    expect((await run("read_skill", { skill: "b" })).result).toMatchObject({ ok: true, package_root: SKILL_ROOT, page_files: { ref: "../_skills/b/", files: ["engine.js"] } });
     expect((await run("read_skill", { skill: "没装" })).result).toMatchObject({ ok: false, code: "skill_not_found", message: expect.stringContaining("「没装」") });
     expect((await runnerWith().run("read_skill", { skill: "示例技能" })).result).toMatchObject({ ok: false, code: "skill_not_found" });
 

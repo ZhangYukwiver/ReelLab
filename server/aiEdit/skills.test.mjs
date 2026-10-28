@@ -50,12 +50,12 @@ async function until(check, ms = 10_000) {
   }
 }
 
-/** 一个只有一条技能的本机文件夹，装好返回。 */
+/** 一个只有一条技能的本机文件夹，装好返回；folder 是拷进应用的那份（技能读写的是它）。 */
 async function folderSkill(skills, files = {}) {
   const folder = await temporaryDirectory("skill-pack-");
   await put(folder, { "SKILL.md": skillFile("runner", "跑命令"), ...files });
   const { installed } = await skills.install(folder);
-  return { skill: installed[0], folder: await realpath(folder) };
+  return { skill: installed[0], folder: installed[0].root };
 }
 
 /** 起一个每 200ms 打一行的服务就退出的启动器（常见写法）：argv 是输出怎么给它（inherit / ignore）和 pid 文件名。 */
@@ -109,7 +109,7 @@ describe("parseSkillFile", () => {
 });
 
 describe("skills registry", () => {
-  it("finds skills in a local folder by the discovery rules and registers them in place", async () => {
+  it("finds skills in a local folder by the discovery rules and copies the folder into the app", async () => {
     const { skills, base } = await manager();
     const folder = await temporaryDirectory("skill-pack-");
     await put(folder, {
@@ -129,12 +129,17 @@ describe("skills registry", () => {
     const { installed } = await skills.install(folder);
     expect(installed.map((skill) => skill.id).sort()).toEqual(["alpha-tool", "beta", "plain", "same", "same-2"]);
     const alpha = installed.find((skill) => skill.id === "alpha-tool");
+    // 整份拷到 skills/local_<文件夹名>_<路径摘要>/，不带 node_modules
+    const pack = alpha.root;
+    expect(path.dirname(pack)).toBe(path.join(base, "skills"));
+    expect(path.basename(pack)).toMatch(/^local_skill-pack-[a-z0-9-]*_[0-9a-f]{8}$/u);
     expect(alpha).toEqual({
-      id: "alpha-tool", name: "Alpha Tool", description: "第一个", root: real, dir: path.join(real, "skills", "alpha"),
+      id: "alpha-tool", name: "Alpha Tool", description: "第一个", root: pack, dir: path.join(pack, "skills", "alpha"),
       work: path.join(base, "skill-work", "alpha-tool"), source: { type: "folder", path: real },
       enabled: true, trustCommands: false, installedAt: expect.any(String), problem: null,
     });
-    expect(installed.find((skill) => skill.id === "beta")).toMatchObject({ description: "Use when: the user asks", dir: path.join(real, ".claude", "skills", "beta") });
+    expect(await exists(path.join(pack, "node_modules"))).toBe(false);
+    expect(installed.find((skill) => skill.id === "beta")).toMatchObject({ description: "Use when: the user asks", dir: path.join(pack, ".claude", "skills", "beta") });
     expect(installed.find((skill) => skill.id === "plain")).toMatchObject({ name: "plain", description: "" });
     expect((await skills.list()).map((skill) => skill.name)).toEqual(["Alpha Tool", "beta", "plain", "Same", "Same"]);
 
@@ -154,14 +159,63 @@ describe("skills registry", () => {
     expect((await skills.enabled()).map((skill) => skill.id)).not.toContain("alpha-tool");
     await expect(skills.update("alpha-tool", { enabled: "yes" })).rejects.toMatchObject({ code: "skill_patch_invalid" });
 
-    // 本机文件夹删掉只去登记，文件留着
+    expect(again.find((skill) => skill.id === "fresh")).toMatchObject({ root: pack });
+
+    // 删掉只去登记：源文件夹不动，同一个包里还有别的技能，拷进来的也留着
     expect(await skills.remove("beta")).toEqual({ removed: true });
     expect(await exists(path.join(folder, ".claude", "skills", "beta", "SKILL.md"))).toBe(true);
+    expect(await exists(pack)).toBe(true);
     await expect(skills.get("beta")).rejects.toMatchObject({ code: "skill_not_found" });
+
+    // 源文件夹挪走了照样能用
+    await rm(folder, { recursive: true, force: true });
+    expect((await skills.get("alpha-tool")).problem).toBeNull();
 
     // 登记表存盘了：换一个管理器读出来一样
     const reloaded = createSkills({ root: base, shellEnv: async () => ({ ...process.env }), proxy: async () => null });
     expect((await reloaded.list()).map((skill) => skill.id).sort()).toEqual(["alpha-tool", "fresh", "same", "same-2"]);
+  });
+
+  it("copies a skill's page-files into the pages area on install and update, and keeps them when the skill goes", async () => {
+    const { skills, base } = await manager();
+    const folder = await temporaryDirectory("skill-pages-");
+    await put(folder, { "SKILL.md": skillFile("vibe", "网页片段的引擎"), "page-files/engine.js": "v1", "page-files/img/bg.jpg": "jpg", "notes.md": "不拷" });
+    const outside = await temporaryDirectory("skill-outside-");
+    await writeFile(path.join(outside, "secret.txt"), "外面的");
+    if (!windows) await symlink(path.join(outside, "secret.txt"), path.join(folder, "page-files", "leak.txt"));
+    const [skill] = (await skills.install(folder)).installed;
+    const shared = path.join(base, "pages", "_skills", skill.id);
+    expect(await readFile(path.join(shared, "engine.js"), "utf8")).toBe("v1");
+    expect(await skills.pageFiles(skill)).toEqual({ ref: `../_skills/${skill.id}/`, files: ["engine.js", "img/bg.jpg"] });
+    // 链接不跟出去；page-files 只在装、更新时拷，AI 改不了
+    expect(await exists(path.join(shared, "leak.txt"))).toBe(false);
+    await expect(skills.writeFile(skill, "page-files/engine.js", "改")).rejects.toMatchObject({ code: "path_protected" });
+
+    // 重装同一个文件夹 = 更新：整个换成新的
+    await put(folder, { "page-files/engine.js": "v2" });
+    await rm(path.join(folder, "page-files", "img"), { recursive: true });
+    await skills.install(folder);
+    expect(await readFile(path.join(shared, "engine.js"), "utf8")).toBe("v2");
+    expect(await exists(path.join(shared, "img"))).toBe(false);
+
+    // 技能删了：拷进来的包删掉，给网页片段的留着（写好的网页还引用它）
+    await skills.remove(skill.id);
+    expect(await exists(skill.root)).toBe(false);
+    expect(await readFile(path.join(shared, "engine.js"), "utf8")).toBe("v2");
+    expect(await skills.pageFiles(skill)).toBeNull();
+  });
+
+  it("turns a folder registered in place by an older version into a copy with the same id", async () => {
+    const { skills, base } = await manager();
+    const folder = await realpath(await temporaryDirectory("skill-legacy-"));
+    await put(folder, { "SKILL.md": skillFile("legacy", "旧版原地登记的") });
+    const old = { id: "my-legacy", enabled: true, trustCommands: true, name: "legacy", root: folder, dir: folder, source: { type: "folder", path: folder }, installedAt: "2026-10-27T03:29:29.106Z" };
+    await writeFile(path.join(base, "skills.json"), JSON.stringify({ skills: [old] }));
+    expect((await skills.list())[0]).toMatchObject({ id: "my-legacy", root: folder });
+    const [skill] = (await skills.install(folder)).installed;
+    expect(skill).toMatchObject({ id: "my-legacy", trustCommands: true, source: { type: "folder", path: folder } });
+    expect(path.dirname(skill.root)).toBe(path.join(base, "skills"));
+    expect((await skills.list()).map((item) => item.id)).toEqual(["my-legacy"]);
   });
 
   it("only takes skills near the top of a local folder and says which folder to pick instead", async () => {
@@ -186,9 +240,13 @@ describe("skills registry", () => {
     const { installed } = await skills.install(folder);
     expect(installed).toHaveLength(1);
     // 名字拼不出 id 时用文件夹名
-    expect(installed[0]).toMatchObject({ id: expect.stringMatching(/^skill-single-/u), name: "单个", root: await realpath(folder), dir: await realpath(folder) });
+    expect(installed[0]).toMatchObject({ id: expect.stringMatching(/^skill-single-/u), name: "单个", source: { type: "folder", path: await realpath(folder) } });
+    expect(installed[0].dir).toBe(installed[0].root);
 
+    // 源文件夹删了不碍事；拷进来的那份没了才算坏
     await rm(folder, { recursive: true, force: true });
+    expect((await skills.list())[0].problem).toBeNull();
+    await rm(installed[0].root, { recursive: true, force: true });
     const [gone] = await skills.list();
     expect(gone.problem).toContain("不在了");
     expect(await skills.enabled()).toEqual([]);
@@ -274,7 +332,9 @@ describe("skills registry", () => {
 
     const { installed, skipped } = await skills.install(folder);
     expect(installed.map((skill) => skill.name).sort()).toEqual(["linked", "own"]);
-    expect(installed.find((skill) => skill.name === "own")).toMatchObject({ root: folder, dir: path.join(folder, "own") });
+    const own = installed.find((skill) => skill.name === "own");
+    expect(own).toMatchObject({ source: { type: "folder", path: folder } });
+    expect(own.dir).toBe(path.join(own.root, "own"));
     const linked = installed.find((skill) => skill.name === "linked");
     expect(linked).toMatchObject({ root: real, dir: real, source: { type: "folder", path: folder }, problem: null });
     expect(skipped).toEqual([expect.stringContaining(path.join(folder, "whole"))]);
@@ -569,7 +629,8 @@ describe("skill files", () => {
     expect(top.entries.slice(0, 3)).toEqual([
       { name: "config", kind: "dir", size: null }, { name: "data", kind: "dir", size: null }, { name: "keys", kind: "dir", size: null },
     ]);
-    expect(top.entries).toContainEqual({ name: "node_modules", kind: "dir", size: null });
+    // 拷进应用时不带 node_modules
+    expect(top.entries.map((entry) => entry.name)).not.toContain("node_modules");
     expect(top.entries).toContainEqual({ name: "SKILL.md", kind: "file", size: Buffer.byteLength(skillFile("runner", "跑命令")) });
 
     const own = await skills.readFile(skill);

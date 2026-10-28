@@ -49,7 +49,9 @@ const BOARD_EDITS = new Map([
   ["split_clip", null],
   ["delete_clip", null],
   ["duplicate_clip", null],
-  ["update_track", new Set(["track_id", "mute"])],
+  ["update_track", new Set(["track_id", "mute", "narration", "duck"])],
+  // 属性面板的出片设置：成片响度和画质
+  ["set_canvas", new Set(["loudness", "quality"])],
   ["reorder_tracks", null],
   // 时间线工具栏：加、删、挪、改名标记，在播放头处补一条字幕
   ["add_marker", new Set(["time", "label", "color"])],
@@ -69,6 +71,7 @@ const FEATURE_EDITS = {
   add_transition: ["transition_type", "转场"], add_filter: ["filter_type", "滤镜"], add_effect: ["effect_type", "特效"],
   add_animation: ["animation_type", "动画"], add_mask: ["mask_type", "蒙版"], set_mix_mode: ["mode", "混合模式"],
 };
+const QUALITY_NAMES = { high: "高", standard: "标准", small: "小体积" };
 const ANIMATION_KINDS = { in: "入场动画", out: "出场动画", group: "组合动画", loop: "循环动画" };
 const FEATURE_LABELS = {
   transition: "转场", effects: "特效", filters: "滤镜", animations: "动画", fade: "淡入淡出", mask: "蒙版", chroma: "抠像",
@@ -298,7 +301,8 @@ function boardEdits(body) {
     const args = edit?.arguments;
     if (keys === undefined || !args || typeof args !== "object" || Array.isArray(args)
       || (keys && Object.keys(args).some((key) => !keys.has(key)))
-      || (edit.name === "update_track" && typeof args.mute !== "boolean")) throw notAllowed();
+      // 轨道一次只开关一项：静音、旁白或让位
+      || (edit.name === "update_track" && (Object.keys(args).length !== 2 || !["mute", "narration", "duck"].some((key) => typeof args[key] === "boolean")))) throw notAllowed();
   }
   return edits.map(({ name, arguments: args }) => ({ name, args }));
 }
@@ -357,9 +361,22 @@ function describeEdit(name, args, before, after, result) {
     const where = added ? `，clip_id ${added.segment.id}，在 ${seconds(added.segment.timeline.start_us)}–${seconds(added.segment.timeline.start_us + added.segment.timeline.duration_us)} 秒` : "";
     return { label: `加了一条字幕“${leading(args.text, 12)}”`, note: `在字幕里补了一条“${leading(args.text, 40)}”${where}` };
   }
+  if (name === "set_canvas") {
+    const { loudness, quality } = after.canvas;
+    const said = `成片响度${loudness ? ` ${loudness} LUFS` : "不处理"}，画质${QUALITY_NAMES[quality ?? "standard"]}`;
+    return { label: "改了出片设置", note: `把本机出 MP4 的设置改成了${said}` };
+  }
   if (name === "update_track") {
     const track = after.tracks.find((item) => item.id === args.track_id);
     const named = `“${trackLabel(track)}”`;
+    if (args.narration !== undefined) {
+      return args.narration ? { label: `把${named}标成旁白`, note: `把${trackRef(track)}标成了旁白（出 MP4 时设了让位的轨道在旁白响时压低）` }
+        : { label: `取消${named}的旁白标记`, note: `取消了${trackRef(track)}的旁白标记` };
+    }
+    if (args.duck !== undefined) {
+      return args.duck ? { label: `让${named}给旁白让位`, note: `让${trackRef(track)}在旁白响时自动压低` }
+        : { label: `${named}不再给旁白让位`, note: `${trackRef(track)}不再给旁白让位` };
+    }
     return args.mute ? { label: `静音${named}`, note: `把${trackRef(track)}静音了` } : { label: `取消${named}的静音`, note: `取消了${trackRef(track)}的静音` };
   }
   if (name === "reorder_tracks") {

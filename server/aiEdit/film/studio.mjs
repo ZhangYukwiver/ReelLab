@@ -8,7 +8,7 @@ import { Unzip, UnzipInflate, Zip, ZipDeflate, ZipPassThrough } from "fflate";
 
 import { AiEditError } from "../library.mjs";
 import { openTab } from "./browser.mjs";
-import { encodeMp4 } from "./encoder.mjs";
+import { QUALITY_BITS, encodeMp4 } from "./encoder.mjs";
 import { FILM_FILE, droppedText, filmToPlan, projectToFilm, transformOf } from "./filmFile.mjs";
 import { createPages } from "./pages.mjs";
 import { createFilmFiles } from "./serve.mjs";
@@ -16,6 +16,8 @@ import { createFilmFiles } from "./serve.mjs";
 // openfilm 工程化接进 AI 剪辑：网页片段（pages.mjs）、film.html 工程导出 / 导入（zip）、按 film.html 在本机出 MP4。
 // 出片和 openfilm 的 render 一样：film.html 由 vendor/timeline.mjs 播放，逐帧画好截图；编码和混音在渲染浏览器里（encoder.mjs）。
 
+// 网页片段引用的共用文件夹：技能带的 ../_skills/<技能 id>/，早先手放的 ../_vibe/ 这类
+const SHARED_REF = /\.\.\/(_skills\/[\w-][\w.-]*|_(?!skills\/)[\w-][\w.-]*)\//gu;
 const MAX_IMPORT_BYTES = 4 * 1024 ** 3;
 const MAX_IMPORT_FILES = 3_000;
 const US = 1_000_000;
@@ -42,6 +44,7 @@ export function createFilmStudio({ root, library, provider, getOrigin }) {
       const names = new Map();
       const assets = [];
       const pageFolders = new Set();
+      const pageFiles = new Set();
       const srcFor = (item, filePath) => {
         if (!names.has(filePath)) {
           const base = path.basename(item?.name || filePath).replace(/[\\/]/gu, "_");
@@ -55,9 +58,18 @@ export function createFilmStudio({ root, library, provider, getOrigin }) {
       };
       const pageSrc = (rel) => {
         pageFolders.add(rel.split("/")[0]);
+        pageFiles.add(rel);
         return `pages/${rel}`;
       };
       const { html, texts, dropped } = projectToFilm(project, { mediaOf, srcFor, pageSrc, textSrc: (segment) => `text/${segment.id}.html` });
+      // 页面引用的共用文件夹也带上，放在包里同样的相对位置（已经整个带上的文件夹里的不重复带）
+      for (const rel of pageFiles) {
+        const page = await readFile(path.join(pages.directory, rel), "utf8").catch(() => "");
+        for (const [, shared] of page.matchAll(SHARED_REF)) {
+          const place = path.posix.normalize(path.posix.join(path.posix.dirname(rel), "..", shared));
+          if (!place.startsWith("..") && ![...pageFolders].some((known) => place === known || place.startsWith(`${known}/`))) pageFolders.add(place);
+        }
+      }
       const folder = safeName(project.name);
       const finished = once(out, "finish");
       const zip = new Zip((error, chunk, final) => {
@@ -83,7 +95,7 @@ export function createFilmStudio({ root, library, provider, getOrigin }) {
       text(FILM_FILE, html);
       for (const page of texts) text(page.src, page.html);
       for (const asset of assets) await stream(asset.zip, asset.file);
-      // 网页片段整个文件夹带上（页面可能引用旁边的图片、字体）
+      // 网页片段整个文件夹带上（页面可能引用旁边的图片、字体），连同它引用的共用文件夹
       for (const id of pageFolders) {
         const base = path.join(pages.directory, id);
         const walk = async (dir) => {
@@ -256,7 +268,7 @@ export function createFilmStudio({ root, library, provider, getOrigin }) {
     },
 
     /**
-     * 按工程出 MP4：先写成 film.html（片段直接引用素材库和网页片段），再逐帧画、编码、混音。
+     * 按工程出 MP4：先写成 film.html（片段直接引用素材库和网页片段），再逐帧画、编码、混音。画布上的 loudness、quality 定响度和码率。
      * 回 { file, name, dropped, silent }；file 在 renders/<会话 id>/ 下。
      */
     async renderMp4(sessionId, project, { onProgress = () => undefined, signal } = {}) {
@@ -283,10 +295,17 @@ export function createFilmStudio({ root, library, provider, getOrigin }) {
       try {
         encoder = await openTab(provider, files.urlFor(origin, "__encoder.html"), { plain: true });
         const count = Math.max(1, Math.round(duration * fps));
+        // 声音片段（clip 是片段 id）按所在轨道标上旁白 / 让位：旁白轨不跟着自己让位
+        const roles = new Map(project.tracks.flatMap((track) => {
+          const role = track.narration ? "voice" : track.duck ? "duck" : null;
+          return role ? (track.segments ?? []).map((segment) => [segment.id, role]) : [];
+        }));
         const result = await encodeMp4({
           encoderTab: encoder, file, width, height, fps, count, signal,
           frame: async (index) => { await film.seek(index / fps); return film.capture({ format: "jpeg", quality: 90 }); },
-          sounds: film.meta.sounds,
+          sounds: film.meta.sounds.map((sound) => (roles.has(sound.clip) ? { ...sound, role: roles.get(sound.clip) } : sound)),
+          loudness: project.canvas.loudness ?? null,
+          bitsPerPixel: QUALITY_BITS[project.canvas.quality] ?? QUALITY_BITS.standard,
           onProgress: (share) => onProgress(share * 0.95),
         });
         onProgress(1);

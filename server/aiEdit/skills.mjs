@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { constants, createWriteStream, mkdirSync } from "node:fs";
-import { access, appendFile, chmod, lstat, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { access, appendFile, chmod, cp, lstat, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -16,10 +16,13 @@ import { renameRetrying } from "./rename.mjs";
 
 // AI 剪辑的技能：用户自己装的「含 SKILL.md 的文件夹」（GitHub 仓库或本机文件夹），模型照里面的说明读写文件、跑命令。
 // 这里不认任何具体技能：说明运行时读 SKILL.md，读写和命令都限在技能包根目录和这个技能的工作目录里。
-// 登记表 <ai-edit>/skills.json；GitHub 包解到 <ai-edit>/skills/<owner>_<repo>/（旁边 .files-<owner>_<repo>.json 记着 zip 里带了哪些路径）；
-// 工作目录 <ai-edit>/skill-work/<技能 id>/。
+// 登记表 <ai-edit>/skills.json；GitHub 包解到 <ai-edit>/skills/<owner>_<repo>/，本机文件夹整份拷到 <ai-edit>/skills/local_<名字>_<路径摘要>/
+// （旁边 .files-<包>.json 记着装进来时带了哪些路径）；工作目录 <ai-edit>/skill-work/<技能 id>/。
+// 技能文件夹里的 page-files/ 是给网页片段共用的文件（动画引擎、字体、背景图），装、更新时拷到 <ai-edit>/pages/_skills/<技能 id>/，
+// 网页片段写 ../_skills/<技能 id>/… 引用。
 
 const SKILL_FILE = "SKILL.md";
+const PAGE_FILES = "page-files";
 const MAX_PACKAGE_BYTES = 200 * 1024 ** 2;
 const MAX_PACKAGE_FILES = 5_000;
 // 一次推太大的块，fflate 会按文件一层层递归到爆栈（一大块里几千个小文件）：切小了再推
@@ -39,8 +42,8 @@ const SECRET_FILE = /(^|[._-])(api[_-]?key|secret|credential|password|token)s?([
 const VOCAB_FILE = /^(special_tokens_map|added_tokens)\.json$/iu;
 // 说明文档不当密钥（credentials.md 讲的是怎么配）；.txt 不放，api_key.txt 这类就是密钥
 const DOC_FILE = /\.(md|mdx|markdown|rst)$/iu;
-// 写文件时不许动的：技能自己的说明和脚本、版本库、依赖
-const PROTECTED_DIRS = new Set(["agents", "references", "scripts"]);
+// 写文件时不许动的：技能自己的说明和脚本、版本库、依赖；page-files/ 只在装、更新时拷给网页片段，改了也不生效
+const PROTECTED_DIRS = new Set(["agents", "references", "scripts", PAGE_FILES]);
 const MAX_LIST_ENTRIES = 300;
 const MAX_READ_BYTES = 32 * 1024 ** 2;
 const MAX_READ_CHARS = 40_000;
@@ -425,7 +428,7 @@ export function createSkills({
     let description = "";
     let problem = null;
     try {
-      ({ name, description } = parseSkillFile(decodeText(await readFile(path.join(entry.dir, SKILL_FILE))), path.basename(entry.dir)));
+      ({ name, description } = parseSkillFile(decodeText(await readFile(path.join(entry.dir, SKILL_FILE))), entry.name ?? path.basename(entry.dir)));
     } catch (error) {
       if (!await stat(entry.dir).then((info) => info.isDirectory(), () => false)) problem = `技能文件夹不在了（${entry.dir}），重新安装或者删掉它。`;
       else if (error?.code === "ENOENT") problem = "文件夹里没有 SKILL.md 了，重新安装或者删掉它。";
@@ -492,11 +495,17 @@ export function createSkills({
     const installedAt = now().toISOString();
     const installed = [];
     for (const { root: skillRoot, dir } of found) {
-      const { name } = parseSkillFile(decodeText(await readFile(path.join(dir, SKILL_FILE))), path.basename(dir));
-      let entry = entries.find((item) => same(item.root, skillRoot) && same(item.dir, dir));
+      // 拷进来的本机文件夹本身就是技能：没写 name 时用源文件夹的名字，不用拷贝的目录名
+      const own = source.type === "folder" && same(dir, skillRoot) && within(packagesDir(), skillRoot) ? path.basename(source.path) : path.basename(dir);
+      const { name } = parseSkillFile(decodeText(await readFile(path.join(dir, SKILL_FILE))), own);
+      // 以前原地登记的本机文件夹（包根就是源文件夹）重装成拷贝：按包里的位置认回来，id 不变，引用它共用文件的网页片段不坏
+      let entry = entries.find((item) => same(item.root, skillRoot) && same(item.dir, dir))
+        ?? (source.type === "folder" && !same(skillRoot, source.path)
+          ? entries.find((item) => same(item.root, source.path) && same(path.relative(item.root, item.dir), path.relative(skillRoot, dir)))
+          : undefined);
       if (!entry) {
         const slug = (text) => String(text).toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "").slice(0, 48);
-        const stem = slug(name) || slug(path.basename(dir)) || "skill";
+        const stem = slug(name) || slug(own) || "skill";
         let id = stem;
         for (let n = 2; taken.has(id); n += 1) id = `${stem}-${n}`;
         taken.add(id);
@@ -512,7 +521,28 @@ export function createSkills({
     }
     entries = keep;
     await save();
+    for (const entry of installed) await syncPageFiles(entry);
     return { installed: await Promise.all(installed.map(view)) };
+  };
+
+  const pageFilesDir = (id) => path.join(base, "pages", "_skills", id);
+
+  /** 技能的 page-files/ 整个换到 pages/_skills/<id>/。技能删了、更新后不带了也留着：已经写好的网页片段还要用。 */
+  const syncPageFiles = async (entry) => {
+    const from = path.join(entry.dir, PAGE_FILES);
+    if (!await stat(from).then((info) => info.isDirectory(), () => false)) return;
+    const to = pageFilesDir(entry.id);
+    const temp = path.join(path.dirname(to), `.${entry.id}-${randomBytes(4).toString("hex")}`);
+    try {
+      await mkdir(path.dirname(to), { recursive: true, mode: 0o700 });
+      // 链接不拷：拷过去的文件经网页片段的地址谁都读得到，不能跟着链接带出技能以外的东西
+      await cp(from, temp, { recursive: true, filter: async (file) => !(await lstat(file)).isSymbolicLink() });
+      await rm(to, { recursive: true, force: true, maxRetries: 5 });
+      await renameRetrying(temp, to);
+    } catch (error) {
+      await rm(temp, { recursive: true, force: true }).catch(() => undefined);
+      throw new AiEditError("skill_page_files_failed", `技能「${entry.name}」装好了，但 page-files/ 没拷进应用（${error?.code ?? error?.message ?? "原因不明"}），网页片段引用不到，再装一次试试。`, 500);
+    }
   };
 
   /** 下 GitHub 仓库的 zip 解进 folder：外层的 <repo>-<ref>/ 原样解出来，之后再认；跳过 .git 和 __MACOSX。 */
@@ -604,6 +634,47 @@ export function createSkills({
     }
   };
 
+  /**
+   * 解好（拷好）的包 unpacked 换到 skills/<key>/ 上，found 是 unpacked 里的技能文件夹。同一个 key 重装 = 更新：整个换上去，
+   * 旧包里技能自己后来存的东西搬过来（carryOver），换失败就把旧的放回来。extra 是不在包里、原地登记的技能（{ root, dir }）。
+   */
+  const adopt = async (key, unpacked, found, source, extra = []) => {
+    const packaged = (await readdir(unpacked, { recursive: true })).map(pathKey);
+    return serial(async () => {
+      const target = path.join(packagesDir(), key);
+      if (busy(target)) throw busyError();
+      const old = path.join(packagesDir(), `.old-${randomBytes(6).toString("hex")}`);
+      const had = await stat(target).then(() => true, () => false);
+      // 路径表读不到、坏了：旧包里新包没有的全搬，宁可多留
+      const before = had ? await readFile(filesList(target), "utf8").then((text) => new Set(JSON.parse(text))).catch(() => null) : null;
+      if (had) await renameRetrying(target, old);
+      try {
+        await renameRetrying(unpacked, target);
+      } catch (error) {
+        if (had) await renameRetrying(old, target).catch(() => undefined);
+        throw error;
+      }
+      let kept = null;
+      if (had) {
+        try {
+          await carryOver(old, target, before);
+          await rm(old, { recursive: true, force: true, maxRetries: 5 }).catch(() => undefined);
+        } catch (error) {
+          // 搬到一半失败：旧包改成启动时不会清掉的名字留着，用户还能自己拷回来
+          kept = { error, at: path.join(packagesDir(), `.backup-${key}-${randomBytes(4).toString("hex")}`) };
+          await renameRetrying(old, kept.at).catch(() => { kept.at = old; });
+        }
+      }
+      await writeFile(filesList(target), JSON.stringify(packaged), { mode: 0o600 });
+      const dirs = found.map((dir) => ({ root: target, dir: path.join(target, path.relative(unpacked, dir)) }));
+      const result = await register(target, [...dirs, ...extra], source);
+      if (kept) {
+        throw new AiEditError("skill_update_partial", `新版本装好了，但旧版本里技能自己存的数据没搬全（${kept.error?.code ?? kept.error?.message ?? "原因不明"}）。旧版本留在 ${kept.at}，要的东西可以从那里拷回来。`, 500);
+      }
+      return result;
+    });
+  };
+
   const installGithub = async (source, signal) => {
     await load();
     // GitHub 的用户名、组织名不能带下划线：拼起来不会两个仓库撞成一个目录（owner-repo 会：a-b/c 和 a/b-c）
@@ -621,53 +692,19 @@ export function createSkills({
       }
       const found = await findSkillDirs(from);
       if (!found.length) throw new AiEditError("skill_missing", "这个仓库里没找到 SKILL.md，不是技能包。", 422);
-      const packaged = (await readdir(unpacked, { recursive: true })).map(pathKey);
       const url = `https://github.com/${source.owner}/${source.repo}`;
-      return await serial(async () => {
-        const target = path.join(packagesDir(), key);
-        if (busy(target)) throw busyError();
-        // 同一个仓库重装 = 更新：解好的整个换上去，换失败就把旧的放回来
-        const old = path.join(packagesDir(), `.old-${randomBytes(6).toString("hex")}`);
-        const had = await stat(target).then(() => true, () => false);
-        // 路径表读不到、坏了：旧包里新 zip 没有的全搬，宁可多留
-        const before = had ? await readFile(filesList(target), "utf8").then((text) => new Set(JSON.parse(text))).catch(() => null) : null;
-        if (had) await renameRetrying(target, old);
-        try {
-          await renameRetrying(unpacked, target);
-        } catch (error) {
-          if (had) await renameRetrying(old, target).catch(() => undefined);
-          throw error;
-        }
-        let kept = null;
-        if (had) {
-          try {
-            await carryOver(old, target, before);
-            await rm(old, { recursive: true, force: true, maxRetries: 5 }).catch(() => undefined);
-          } catch (error) {
-            // 搬到一半失败：旧包改成启动时不会清掉的名字留着，用户还能自己拷回来
-            kept = { error, at: path.join(packagesDir(), `.backup-${key}-${randomBytes(4).toString("hex")}`) };
-            await renameRetrying(old, kept.at).catch(() => { kept.at = old; });
-          }
-        }
-        await writeFile(filesList(target), JSON.stringify(packaged), { mode: 0o600 });
-        const dirs = found.map((dir) => ({ root: target, dir: path.join(target, path.relative(unpacked, dir)) }));
-        const result = await register(target, dirs, { type: "github", url, ref: source.ref, subdir: source.subdir });
-        if (kept) {
-          throw new AiEditError("skill_update_partial", `新版本装好了，但旧版本里技能自己存的数据没搬全（${kept.error?.code ?? kept.error?.message ?? "原因不明"}）。旧版本留在 ${kept.at}，要的东西可以从那里拷回来。`, 500);
-        }
-        return result;
-      });
+      return await adopt(key, unpacked, found, { type: "github", url, ref: source.ref, subdir: source.subdir });
     } finally {
       await rm(temp, { recursive: true, force: true, maxRetries: 5 }).catch(() => undefined);
     }
   };
 
   /**
-   * 本机文件夹：原地登记，不复制；删的时候也只去掉登记。整个文件夹都是 AI 能读写的范围，所以不收：
+   * 本机文件夹：整份拷进 skills/ 再登记（见下面 copyFolder），删的时候删拷进来的那份，源文件夹不动。整个文件夹都是 AI 能读写的范围、也要整份拷，所以不收：
    * 家目录、各个程序放配置和数据的目录（~/.config、mac 的 ~/Library、Windows 的 %APPDATA% 和 %LOCALAPPDATA%）和它们的上层，
    * 应用自己的数据目录（里面、上层都不行），Claude/Codex 的配置目录（只有里面的 skills/ 可以）。
    * 技能只认往下两层的（.claude/skills/x 这类三层），选了个大文件夹、技能埋得很深的不认。
-   * 软链也跟进去：链到文件夹外面的技能自己算一个包（AI 只能动它自己的文件夹），它的文件夹同样不能范围太大，太大的跳过并说明。
+   * 软链也跟进去：链到文件夹外面的技能自己算一个包，原地登记不拷（AI 只能动它自己的文件夹），它的文件夹同样不能范围太大，太大的跳过并说明。
    */
   const installFolder = async (source) => {
     let folder;
@@ -714,8 +751,44 @@ export function createSkills({
     if (!found.length) {
       throw new AiEditError("skill_missing", "这个文件夹里没找到技能：只看它自己和往下两层（.claude/skills/ 这类往下三层）有没有 SKILL.md。请选单个技能的文件夹，或者技能仓库的根目录。", 422);
     }
-    const result = await serial(() => register(folder, found, { type: "folder", path: folder }));
+    const inside = found.filter((item) => item.root === folder).map((item) => item.dir);
+    const linked = found.filter((item) => item.root !== folder);
+    const from = { type: "folder", path: folder };
+    let result;
+    if (!inside.length) result = await serial(() => register(folder, linked, from));
+    else {
+      // 文件夹整份拷进应用：源文件夹挪走、删掉，技能照样能用；重装同一个文件夹就是更新（技能自己后来存的东西留着）
+      const temp = path.join(packagesDir(), `.download-${randomBytes(6).toString("hex")}`);
+      try {
+        await copyFolder(folder, temp);
+        const slug = path.basename(folder).toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "").slice(0, 32) || "skill";
+        const key = `local_${slug}_${createHash("sha256").update(pathKey(folder)).digest("hex").slice(0, 8)}`;
+        result = await adopt(key, temp, inside.map((dir) => path.join(temp, path.relative(folder, dir))), from, linked);
+      } finally {
+        await rm(temp, { recursive: true, force: true, maxRetries: 5 }).catch(() => undefined);
+      }
+    }
     return skipped.length ? { ...result, skipped } : result;
+  };
+
+  /** 本机文件夹拷进 to：不带 .git、node_modules、.DS_Store，链接原样拷（指到包外的，读写时照样拦），超过 200MB 或 5000 个文件不装。 */
+  const copyFolder = async (from, to) => {
+    let count = 0;
+    let total = 0;
+    await cp(from, to, {
+      recursive: true, verbatimSymlinks: true, errorOnExist: true, force: false,
+      filter: async (file) => {
+        const name = path.basename(file);
+        if (file !== from && (SKIP_DIRS.has(name) || name === ".DS_Store")) return false;
+        const info = await lstat(file);
+        if (!info.isFile()) return info.isDirectory() || info.isSymbolicLink();
+        count += 1;
+        total += info.size;
+        if (count > MAX_PACKAGE_FILES) throw new AiEditError("skill_too_many_files", "技能文件夹里的文件超过 5000 个了（.git、node_modules 不算），装不了。", 413);
+        if (total > MAX_PACKAGE_BYTES) throw new AiEditError("skill_too_large", "技能文件夹超过 200MB 了（.git、node_modules 不算），装不了。", 413);
+        return true;
+      },
+    }).catch(fsFailed("读", from));
   };
 
   /** 新文件（还不存在）取父目录的真实路径再拼回去；悬空的软链不算不存在（写进去会写到它指的地方）。 */
@@ -756,7 +829,7 @@ export function createSkills({
       const inSkill = within(dir, target) ? path.relative(dir, target).toLowerCase().split(path.sep) : [];
       if (parts.at(-1) === SKILL_FILE.toLowerCase() || parts.some((part) => part === ".git" || part === "node_modules")
         || PROTECTED_DIRS.has(inSkill[0])) {
-        throw new AiEditError("path_protected", "技能自己的说明和脚本（SKILL.md、agents/、references/、scripts/）、.git 和 node_modules 里的文件不能改；草稿写到 ~work/ 下。", 403);
+        throw new AiEditError("path_protected", "技能自己的说明和脚本（SKILL.md、agents/、references/、scripts/、page-files/）、.git 和 node_modules 里的文件不能改；草稿写到 ~work/ 下。", 403);
       }
     }
     return target;
@@ -1133,7 +1206,8 @@ export function createSkills({
     },
 
     /**
-     * 去掉登记：GitHub 包没有别的技能在用时连文件一起删；本机文件夹不删文件。工作目录都留着。
+     * 去掉登记：装进应用的包（GitHub 下的、本机文件夹拷的）没有别的技能在用时连文件一起删；原地登记的本机文件夹不删文件。
+     * 工作目录和拷给网页片段的 page-files 都留着。
      * 包目录先改名挪进 .old-（改名是原子的：失败了登记还在，可以再删一次），登记存好了再真删，删不掉的下次启动清。
      */
     async remove(id) {
@@ -1142,7 +1216,7 @@ export function createSkills({
         if (!entry) throw notFound(id);
         if (busy(entry.root)) throw busyError();
         const packages = packagesDir();
-        const drop = entry.source?.type === "github" && within(packages, entry.root) && !same(entry.root, packages)
+        const drop = within(packages, entry.root) && !same(entry.root, packages)
           && !entries.some((item) => item !== entry && same(item.root, entry.root));
         const trash = drop && await stat(entry.root).then(() => true, () => false) ? path.join(packages, `.old-${randomBytes(6).toString("hex")}`) : null;
         if (trash) await renameRetrying(entry.root, trash);
@@ -1159,6 +1233,18 @@ export function createSkills({
         if (drop) await rm(filesList(entry.root), { force: true }).catch(() => undefined);
         return { removed: true };
       });
+    },
+
+    /** 技能带给网页片段的共用文件：{ ref: 网页里引用的相对地址, files: [文件...] }，没有回 null。 */
+    async pageFiles(skill) {
+      await load();
+      // 以前用过同一个 id、已经删掉的技能留下的不算
+      if (!await stat(path.join(skill.dir, PAGE_FILES)).then((info) => info.isDirectory(), () => false)) return null;
+      const dir = pageFilesDir(skill.id);
+      const found = await readdir(dir, { recursive: true, withFileTypes: true }).catch(() => null);
+      if (!found) return null;
+      const files = found.filter((item) => item.isFile()).map((item) => path.relative(dir, path.join(item.parentPath, item.name)).split(path.sep).join("/"));
+      return { ref: `../_skills/${skill.id}/`, files: files.sort().slice(0, MAX_LIST_ENTRIES) };
     },
 
     resolve,

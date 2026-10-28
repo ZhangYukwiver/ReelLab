@@ -201,14 +201,14 @@ export function SkillsPanel({ connection }: { connection: Connection | null }) {
           maxLength={2000} autoCapitalize="none" autoCorrect={false} placeholder="GitHub 地址或本机文件夹路径" placeholderTextColor={color.textMuted} style={styles.input} />
         <SmallButton label={installing ? "安装中…" : "安装"} disabled={!installing && !source.trim()} onPress={install} />
       </View>
-      <Text style={kit.muted}>GitHub 的会下载到应用里，重装同一个仓库就是更新；本机文件夹原地使用，不复制。</Text>
+      <Text style={kit.muted}>GitHub 的会下载到应用里，本机文件夹整份拷进应用（不带 .git、node_modules，原文件夹挪走也不影响）；重装同一个来源就是更新。技能里的 page-files/ 会拷给网页片段共用。</Text>
       {note ? <Text style={styles.note}>{note}</Text> : null}
       {problem ? <Text accessibilityRole="alert" style={styles.errorText}>{problem}</Text> : null}
       {loadProblem ? <ErrorLine text={loadProblem} onRetry={() => { setLoadProblem(null); void load(); }} /> : null}
       {/* 第一次就没读到：上面那行已经说了原因，不再转圈；点了重试才转 */}
       {list === null ? (loadProblem ? null : <ActivityIndicator size="small" color={color.textMuted} style={{ alignSelf: "flex-start" }} />)
         : skills.length ? skills.map((item) => <SkillRow key={item.id} skill={item}
-            shared={item.source.type === "github" && skills.some((other) => other.id !== item.id && other.root === item.root)}
+            shared={skills.some((other) => other.id !== item.id && other.root === item.root)}
             confirming={confirm === item.id}
             onPatch={(change) => void patch(item, change)}
             onAskRemove={() => setConfirm(item.id)}
@@ -225,14 +225,15 @@ export function SkillsPanel({ connection }: { connection: Connection | null }) {
 
 export function SkillRow({ skill, shared, confirming, onPatch, onAskRemove, onRemove, onCancelRemove }: {
   skill: AiEditSkill;
-  /** GitHub 包里还有别的技能：删这一个时下载的文件先留着 */
+  /** 同一个包里还有别的技能：删这一个时装进应用的文件先留着 */
   shared: boolean;
   confirming: boolean;
   onPatch: (change: { enabled?: boolean; trustCommands?: boolean }) => void;
   onAskRemove: () => void; onRemove: () => void; onCancelRemove: () => void;
 }) {
   const where = skill.source.type === "folder" ? `本机文件夹 ${skill.source.path}` : skill.source.url;
-  const removeNote = skill.source.type === "folder" ? "删掉后 AI 就用不了它了，本机文件夹里的文件不动。"
+  const removeNote = skill.source.type === "folder"
+    ? `删掉后 AI 就用不了它了，${shared ? "同一个文件夹里还装着别的技能，拷进应用的文件先留着" : "拷进应用的那份和技能自己存在里面的数据一起删掉"}；原来的文件夹不动。`
     : shared ? "删掉后 AI 就用不了它了；同一个仓库里还装着别的技能，下载的文件先留着。"
       : "删掉后 AI 就用不了它了，下载下来的文件和技能自己存在里面的数据（比如它保存的作品）一起删掉。";
   return <View style={styles.skill}>

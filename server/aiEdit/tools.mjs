@@ -232,6 +232,8 @@ export function timelineSummary(project, library) {
       name: track.name,
       layer: index + 1,
       ...(track.mute ? { mute: true } : {}),
+      ...(track.narration ? { narration: true } : {}),
+      ...(track.duck ? { duck: true } : {}),
       ...(track.kind === "subtitle" ? { subtitles: true } : {}),
       clips: (track.segments ?? []).map((segment) => clipSummary(segment, library)),
     })),
@@ -410,6 +412,8 @@ const num = (description, extra = {}) => ({ type: "number", description, ...extr
 const int = (description, extra = {}) => ({ type: "integer", description, ...extra });
 const str = (description, extra = {}) => ({ type: "string", description, ...extra });
 const bool = (description) => ({ type: "boolean", description });
+const NARRATION_HINT = "这条是旁白（配音、解说）。标了旁白以后，设了 duck 的轨道在旁白响时会自动压低";
+const DUCK_HINT = "给旁白让位：旁白响的时候这条自动压低 10 dB 左右，停了慢慢回来（配乐、环境声用）。配乐整体偏响另用片段音量调";
 const choice = (values, description) => ({ type: "string", enum: values, description });
 const obj = (properties, required = [], description) => ({
   type: "object", properties, ...(required.length ? { required } : {}), ...(description ? { description } : {}),
@@ -1291,7 +1295,8 @@ const TOOLS = [
     name: "write_page",
     description: "写一个网页片段：用 HTML/CSS/JS 画标题字卡、动态大字、数据图表、倒计时、进度条、片头片尾这类剪映内置做不出或做不好的画面，"
       + "应用把它渲成视频放进素材库，返回 media_id，再用 add_media_clip 放进视频轨道（要叠在视频上就放在更上层的轨道）。"
-      + "改已有的网页片段时带上 page_id 再调一次，时间线上用到它的片段自动换成新画面。页面写法见系统提示里的「网页片段」。",
+      + "改已有的网页片段时带上 page_id 再调一次，时间线上用到它的片段自动换成新画面。页面写法见系统提示里的「网页片段」。"
+      + "技能带的共用文件（动画引擎、字体、背景图）用 read_skill 返回的 page_files.ref 开头的相对地址引用，比如 <script src=\"../_skills/<技能 id>/engine.js\"></script>，别把它们抄进页面。",
     parameters: obj({
       page_id: str("改已有的网页片段时填它的 page_id（list_media 和素材库里能看到）；新建不填"),
       title: str("片段名字，素材库里显示，15 字以内"),
@@ -1383,18 +1388,25 @@ const TOOLS = [
   },
   {
     name: "set_canvas",
-    description: "改画布尺寸和帧率（竖屏常用 1080×1920，横屏 1920×1080）。没填的项保持不变。",
+    description: "改画布尺寸和帧率（竖屏常用 1080×1920，横屏 1920×1080），以及本机出 MP4 时的成片响度和画质（剪映草稿不受影响）。没填的项保持不变。",
     parameters: obj({
       width: int("宽，16 到 7680", { minimum: 16, maximum: 7680 }),
       height: int("高，16 到 7680", { minimum: 16, maximum: 7680 }),
       fps: int("帧率，1 到 120", { minimum: 1, maximum: 120 }),
+      loudness: choice(["off", "-14", "-15", "-16"], "出 MP4 时把成片响度归一化到多少 LUFS（真峰值压在 -2 dBTP 以下）：发短视频平台常用 -14 到 -16；off 不处理，按片段音量原样混"),
+      quality: choice(["high", "standard", "small"], "出 MP4 的画质：high 码率高、文件大；standard（默认）1080p30 约 5 Mbps；small 体积小一半"),
     }),
     write: true,
-    label: () => "改了画布",
+    label: (args) => (["width", "height", "fps"].some((key) => args[key] !== undefined) ? "改了画布" : "改了出片设置"),
     run: async (ctx, args) => {
       const { canvas } = await ctx.store.getProject(ctx.projectId);
-      await ctx.store.setCanvas(ctx.projectId, { ...canvas, ...pick(args, ["width", "height", "fps"]) });
-      if (ctx.grids) await rearrangeGrids(ctx, ctx.grids);
+      const output = {
+        ...(args.loudness !== undefined ? { loudness: args.loudness === "off" ? null : Number(args.loudness) } : {}),
+        ...pick(args, ["quality"]),
+      };
+      await ctx.store.setCanvas(ctx.projectId, { ...canvas, ...pick(args, ["width", "height", "fps"]), ...output });
+      // 只改出片设置的不用重排分屏
+      if (ctx.grids && (args.width !== undefined || args.height !== undefined)) await rearrangeGrids(ctx, ctx.grids);
       return ctx.store.getProject(ctx.projectId);
     },
   },
@@ -1405,18 +1417,21 @@ const TOOLS = [
       track_type: choice(Object.keys(TRACK_TYPES), "video 视频/图片，audio 音频，text 文字，sticker 贴纸，effect 特效，filter 滤镜"),
       name: str("轨道名字，不要和已有的重复"),
       mute: bool("静音"),
+      narration: bool(NARRATION_HINT),
+      duck: bool(DUCK_HINT),
     }, ["track_type"]),
     write: true,
     label: (args) => `新建了${TRACK_TYPES[args.track_type] ?? ""}轨道`,
-    run: async (ctx, args) => ctx.store.createTrack(ctx.projectId, pick(args, ["track_type", "name", "mute"])),
+    run: async (ctx, args) => ctx.store.createTrack(ctx.projectId, pick(args, ["track_type", "name", "mute", "narration", "duck"])),
   },
   {
     name: "update_track",
-    description: "给轨道改名或静音/取消静音。",
-    parameters: obj({ track_id: TRACK_ID, name: str("新名字"), mute: bool("是否静音") }, ["track_id"]),
+    description: "给轨道改名、静音/取消静音，或者标成旁白、设成给旁白让位（本机出 MP4 时混音用，剪映草稿不受影响）。",
+    parameters: obj({ track_id: TRACK_ID, name: str("新名字"), mute: bool("是否静音"), narration: bool(NARRATION_HINT), duck: bool(DUCK_HINT) }, ["track_id"]),
     write: true,
-    label: (args) => args.mute === true ? "把一条轨道静音了" : args.mute === false ? "取消了轨道静音" : "改了轨道名",
-    run: async (ctx, args) => ctx.store.updateTrack(ctx.projectId, args.track_id, pick(args, ["name", "mute"])),
+    label: (args) => args.mute === true ? "把一条轨道静音了" : args.mute === false ? "取消了轨道静音"
+      : args.narration !== undefined || args.duck !== undefined ? "改了轨道的旁白设置" : "改了轨道名",
+    run: async (ctx, args) => ctx.store.updateTrack(ctx.projectId, args.track_id, pick(args, ["name", "mute", "narration", "duck"])),
   },
   {
     name: "delete_track",
@@ -1899,6 +1914,7 @@ const TOOLS = [
   {
     name: "read_skill",
     description: "读用户装的技能里的文件。不给 path 读它的 SKILL.md（说明），同时返回技能目录 skill_dir、技能包根目录 package_root、工作目录 work_dir 和这台电脑的环境（系统、node、python、ffmpeg 等装没装）；"
+      + "技能带了给网页片段共用的文件（技能里的 page-files/）时还返回 page_files：ref 是 write_page 的网页里引用它们的相对地址开头，files 是有哪些文件（技能说明里写的别的引用地址以 ref 为准）；"
       + "给 path 读那个文件（相对路径按技能目录算，~work/ 开头是工作目录），是文件夹就列出里面有什么。文件长时用 offset、limit 分页，或者用 search 只看匹配的几行。",
     parameters: obj({
       skill: SKILL,
@@ -1914,15 +1930,17 @@ const TOOLS = [
       const options = pick(args, ["offset", "limit", "search"]);
       if (typeof args.path === "string" && args.path.trim()) return skills.readFile(skill, args.path, options);
       // 目录和环境放在说明前面：压缩历史时只留开头，SKILL.md 长了也不会把它们挤掉
+      const pageFiles = await skills.pageFiles(skill);
       return {
         skill_dir: skill.dir, package_root: skill.root, work_dir: skill.work, environment: await skills.environment(),
+        ...(pageFiles ? { page_files: pageFiles } : {}),
         ...(await skills.readFile(skill, "SKILL.md", options)),
       };
     }),
   },
   {
     name: "write_skill_file",
-    description: "照技能说明写一个文字文件（草稿、配置、参数这类），没有的文件夹自动建。草稿和产出写在工作目录（path 写 ~work/…）；技能的 SKILL.md 和自带的 scripts/、references/、agents/ 改不了。append 填 true 接在文件末尾。",
+    description: "照技能说明写一个文字文件（草稿、配置、参数这类），没有的文件夹自动建。草稿和产出写在工作目录（path 写 ~work/…）；技能的 SKILL.md 和自带的 scripts/、references/、agents/、page-files/ 改不了。append 填 true 接在文件末尾。",
     parameters: obj({
       skill: SKILL,
       path: str("写到哪里：~work/ 开头是工作目录，相对路径按技能目录算"),

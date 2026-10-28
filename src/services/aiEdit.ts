@@ -272,7 +272,9 @@ export function generationForRequest(generate: AiEditGenerateConfig, aiConfig: A
 export type EditFit = "contain" | "cover" | "stretch";
 export type EditTrackType = "video" | "audio" | "text" | "sticker" | "effect" | "filter";
 
-export interface EditCanvas { width: number; height: number; fps: number }
+/** loudness、quality 是本机出 MP4 的成片响度（LUFS，null 或没有是不处理）和画质，没设过的没有这两项 */
+export interface EditCanvas { width: number; height: number; fps: number; loudness?: -14 | -15 | -16 | null; quality?: EditQuality }
+export type EditQuality = "high" | "standard" | "small";
 export interface EditTimeRange { start_us: number; duration_us: number }
 export interface EditTransform {
   scale_x: number; scale_y: number; transform_x: number; transform_y: number;
@@ -354,6 +356,9 @@ export interface EditTrack {
   track_type: EditTrackType;
   name: string;
   mute: boolean;
+  /** 旁白；duck：旁白响时自动压低（只管本机出 MP4） */
+  narration?: boolean;
+  duck?: boolean;
   segments: EditSegment[];
   /** SRT 字幕组是一条 kind=subtitle 的文字轨道 */
   kind?: "subtitle";
@@ -619,7 +624,7 @@ export async function sendAiEditMessage(connection: Connection, id: string, text
  * 看板上能手动做的改动，参数和 AI 的同名工具一样（时间按秒）：move_clip { clip_id, start, track_id? }、update_clip、split_clip、
  * delete_clip、duplicate_clip { clip_id, start, track_id? }、update_track { track_id, mute }、reorder_tracks（全部轨道的完整顺序）。
  */
-export type AiEditClipEdit = "move_clip" | "update_clip" | "split_clip" | "delete_clip" | "duplicate_clip" | "update_track" | "reorder_tracks"
+export type AiEditClipEdit = "move_clip" | "update_clip" | "split_clip" | "delete_clip" | "duplicate_clip" | "update_track" | "reorder_tracks" | "set_canvas"
   | "add_marker" | "remove_marker" | "add_subtitle_line"
   // 左栏「剪映素材」点了直接套上、属性卡里去掉
   | "add_transition" | "add_filter" | "add_effect" | "add_animation" | "add_mask" | "set_mix_mode" | "clear_clip_feature";
