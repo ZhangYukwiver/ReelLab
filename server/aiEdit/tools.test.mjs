@@ -114,6 +114,8 @@ const SAMPLE_ARGS = {
   add_keyframes: { clip_id: "s1", keyframes: [{ property: "alpha", offset: 0, value: 0 }, { property: "alpha", offset: 1.5, value: 1 }] },
   list_keyframes: { clip_id: "s1" },
   remove_keyframe: { clip_id: "s1", property: "alpha", offset: 0.5 },
+  set_keyframe_curve: { clip_id: "s1", property: "alpha", offset: 0.5, curve: "ease_out" },
+  set_curve_speed: { clip_id: "s1", preset: "bullet" },
   add_effect: { clip_id: "s1", effect_type: "_1998", params: [50] },
   add_filter: { clip_id: "s1", filter_type: "_1980" },
   add_animation: { clip_id: "s1", animation_type: "渐隐", duration: 0.8 },
@@ -140,7 +142,7 @@ const SKILL_TOOLS = ["read_skill", "write_skill_file", "run_skill_command", "ski
 const EDIT_METHODS = [
   "updateProject", "setCanvas", "createTrack", "updateTrack", "deleteTrack", "reorderTracks", "addMediaSegment", "addTextSegment",
   "addStickerSegment", "addTrackEffectSegment", "addTrackFilterSegment", "updateSegment", "moveSegment", "duplicateSegment", "deleteSegment", "splitSegment",
-  "getSegment", "addKeyframes", "listKeyframes", "removeKeyframe", "addEffect", "addFilter", "addAnimation", "addTransition", "addFade",
+  "getSegment", "addKeyframes", "setKeyframeCurve", "listKeyframes", "removeKeyframe", "addEffect", "addFilter", "addAnimation", "addTransition", "addFade",
   "clearFeature", "addMask", "addChroma", "addBackgroundFilling", "setMixMode", "addMarker", "listMarkers", "removeMarker",
   "addSrtSubtitles", "removeSubtitleGroup",
 ];
@@ -226,6 +228,10 @@ describe("AI edit tools", () => {
     expect(call("splitSegment")).toEqual([projectId, "s1", 2_000_000]);
     expect(call("addKeyframes")[2]).toEqual({ keyframes: [{ property: "alpha", value: 0, offset_us: 0 }, { property: "alpha", value: 1, offset_us: 1_500_000 }] });
     expect(call("removeKeyframe")).toEqual([projectId, "s1", "alpha", 500_000]);
+    expect(call("setKeyframeCurve")).toEqual([projectId, "s1", { property: "alpha", offset_us: 500_000, curve: [0.32, 0.94, 0.6, 1] }]);
+    expect(calls.find((item) => item.name === "updateSegment" && item.args[2].curve_speed).args).toEqual([projectId, "s1", { curve_speed: {
+      name: "子弹时间", points: [{ x: 0, y: 5.2 }, { x: 0.4, y: 5.2 }, { x: 0.46, y: 0.5 }, { x: 0.54, y: 0.5 }, { x: 0.6, y: 5.2 }, { x: 1, y: 5.2 }],
+    } }]);
     expect(call("addAnimation")[2]).toEqual({ animation_type: "渐隐", duration_us: 800_000 });
     expect(call("addTransition")[2]).toEqual({ transition_type: "叠化", duration_us: 500_000 });
     expect(call("addFade")[2]).toEqual({ in_duration_us: 300_000, out_duration_us: 400_000 });

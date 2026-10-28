@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { EditError, invalid } from "./errors.mjs";
+import { curveSource, seqOf, speedPreset } from "./curves.mjs";
 import { draftInputs, serializeDraft } from "./draft.mjs";
 import { parseSrt, ProjectStore } from "./projectStore.mjs";
 
@@ -107,8 +108,8 @@ describe("ProjectStore replays JianYingAPI ProjectService", () => {
       }
     }
     const methods = Object.getOwnPropertyNames(ProjectStore.prototype).filter((name) => name !== "constructor");
-    // deleteProject、restoreProject、duplicateSegment、addSubtitleLine 是新增的，原仓库没有，下面单独测
-    expect(methods.filter((name) => !called.has(name))).toEqual(["deleteProject", "restoreProject", "duplicateSegment", "addSubtitleLine"]);
+    // deleteProject、restoreProject、duplicateSegment、setKeyframeCurve、addSubtitleLine 是新增的，原仓库没有，下面单独测
+    expect(methods.filter((name) => !called.has(name))).toEqual(["deleteProject", "restoreProject", "duplicateSegment", "setKeyframeCurve", "addSubtitleLine"]);
   });
 
   for (const file of fixtureFiles) {
@@ -574,6 +575,133 @@ describe("ProjectStore keeps sped-up full-length clips inside the media", () => 
       timeline: { start_us: 5_000_000, duration_us: duration + 1 },
       speed: 1.2,
     })).rejects.toMatchObject({ code: "SOURCE_RANGE_INVALID" });
+  });
+});
+
+describe("ProjectStore curves", () => {
+  async function videoClip() {
+    const store = deterministicStore(await makeDirectory());
+    const { id } = await store.createProject({ name: "Curves" });
+    const { tracks } = await store.createTrack(id, { track_type: "video" });
+    const project = await store.addMediaSegment(id, tracks[0].id, { path: path.join(MEDIA_ROOT, "clip-720p.mp4"), timeline: { duration_us: 3_000_000 } });
+    return { store, id, trackId: tracks[0].id, clipId: project.tracks[0].segments[0].id };
+  }
+  const only = (project) => project.tracks[0].segments;
+
+  it("stretches the clip to the curve and keeps the source, back to steady speed on a new speed", async () => {
+    const { store, id, clipId } = await videoClip();
+    const points = speedPreset("bullet");
+    const curved = only(await store.updateSegment(id, clipId, { curve_speed: { name: "子弹时间", points } }))[0];
+    const factor = seqOf(points).factor;
+    expect(curved).toMatchObject({ source: { start_us: 0, duration_us: 3_000_000 }, curve_speed: { name: "子弹时间", points } });
+    expect(curved.timeline.duration_us).toBe(Math.round(3_000_000 * factor));
+    expect(curved.speed).toBeCloseTo(1 / factor, 12);
+    // 看板裁剪会带上原来的倍速：曲线留着，截取按平均倍速跟着变
+    const trimmed = only(await store.updateSegment(id, clipId, { timeline: { start_us: 0, duration_us: 500_000 }, speed: curved.speed }))[0];
+    expect(trimmed.curve_speed).toEqual(curved.curve_speed);
+    expect(trimmed.source.duration_us).toBe(Math.round(500_000 * curved.speed));
+    // 换成别的常规倍速就不再是曲线变速
+    const steady = only(await store.updateSegment(id, clipId, { speed: 2 }))[0];
+    expect(steady.curve_speed).toBeUndefined();
+    expect(steady.speed).toBe(2);
+  });
+
+  it("takes the curve off at the same length and refuses curves that cannot be played", async () => {
+    const { store, id, clipId } = await videoClip();
+    const curved = only(await store.updateSegment(id, clipId, { curve_speed: { points: speedPreset("montage") } }))[0];
+    expect(curved.curve_speed.name).toBe("自定义");
+    const plain = only(await store.clearFeature(id, clipId, "curve_speed"))[0];
+    expect(plain.curve_speed ?? null).toBeNull();
+    expect(plain.timeline).toEqual(curved.timeline);
+    expect(only(await store.updateSegment(id, clipId, { curve_speed: { points: speedPreset("hero") } }))[0].curve_speed).toBeTruthy();
+    expect(only(await store.updateSegment(id, clipId, { curve_speed: null }))[0].curve_speed).toBeUndefined();
+    const bad = [
+      [{ x: 0, y: 1 }, { x: 0.5, y: 2 }],
+      [{ x: 0, y: 1 }, { x: 0.5, y: 2 }, { x: 0.5, y: 2 }, { x: 1, y: 1 }],
+      [{ x: 0, y: 0.05 }, { x: 1, y: 1 }],
+    ];
+    for (const points of bad) await expect(store.updateSegment(id, clipId, { curve_speed: { points } })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    await expect(store.updateSegment(id, clipId, { curve_speed: { points: speedPreset("hero") }, speed: 2 })).rejects.toMatchObject({ code: "SEGMENT_UPDATE_INVALID" });
+
+    const music = (await store.createTrack(id, { track_type: "audio" })).tracks.at(-1);
+    const audio = (await store.addMediaSegment(id, music.id, { path: path.join(MEDIA_ROOT, "tone.aac"), timeline: { duration_us: 500_000 } })).tracks.at(-1).segments[0];
+    await expect(store.updateSegment(id, audio.id, { curve_speed: { points: speedPreset("hero") } })).rejects.toMatchObject({ code: "SEGMENT_FIELD_MISMATCH" });
+  });
+
+  it("moves keyframes along when the curve changes the clip's length", async () => {
+    const { store, id, clipId } = await videoClip();
+    await store.addKeyframes(id, clipId, { keyframes: [{ property: "alpha", offset_us: 0, value: 0 }, { property: "alpha", offset_us: 3_000_000, value: 1 }] });
+    const curved = only(await store.updateSegment(id, clipId, { curve_speed: { points: speedPreset("bullet") } }))[0];
+    expect(curved.keyframes.map((item) => item.offset_us)).toEqual([0, curved.timeline.duration_us]);
+  });
+
+  it("splits a curved clip into two curves that play the same frames", async () => {
+    const { store, id, clipId } = await videoClip();
+    const points = speedPreset("hero");
+    const whole = only(await store.updateSegment(id, clipId, { curve_speed: { name: "英雄时刻", points } }))[0];
+    const offset = Math.round(whole.timeline.duration_us * 0.4);
+    const { segments: [first, second] } = await store.splitSegment(id, clipId, offset);
+    expect(first.source.duration_us).toBe(Math.round(curveSource(points, offset / whole.timeline.duration_us) * 3_000_000));
+    expect(first.source.duration_us + second.source.duration_us).toBe(3_000_000);
+    expect([first.timeline.duration_us, second.timeline.duration_us]).toEqual([offset, whole.timeline.duration_us - offset]);
+    for (const half of [first, second]) {
+      expect(half.curve_speed.name).toBe("英雄时刻");
+      expect(half.speed).toBeCloseTo(half.source.duration_us / half.timeline.duration_us, 12);
+      expect(seqOf(half.curve_speed.points).factor * half.source.duration_us).toBeCloseTo(half.timeline.duration_us, -1);
+    }
+    // 切完还能照常改：截取和时长对得上
+    await store.updateSegment(id, second.id, { volume: 0.5 });
+  });
+
+  it("keeps a curve on each keyframe, eases the split point and splits the curve with it", async () => {
+    const { store, id, clipId } = await videoClip();
+    await store.addKeyframes(id, clipId, { keyframes: [
+      { property: "alpha", offset_us: 0, value: 0, curve: [0.42, 0, 1, 1] },
+      { property: "alpha", offset_us: 2_000_000, value: 1 },
+    ] });
+    // 同一时间点再加一次没给曲线：曲线留着
+    let keyframes = only(await store.addKeyframes(id, clipId, { keyframes: [{ property: "alpha", offset_us: 0, value: 0.1 }] }))[0].keyframes;
+    expect(keyframes[0]).toEqual({ property: "alpha", offset_us: 0, value: 0.1, curve: [0.42, 0, 1, 1] });
+    keyframes = only(await store.setKeyframeCurve(id, clipId, { property: "alpha", offset_us: 0, curve: [0.32, 0.94, 0.6, 1] }))[0].keyframes;
+    expect(keyframes[0].curve).toEqual([0.32, 0.94, 0.6, 1]);
+    await expect(store.setKeyframeCurve(id, clipId, { property: "alpha", offset_us: 2_000_000, curve: [0.42, 0, 1, 1] })).rejects.toMatchObject({ code: "KEYFRAME_CURVE_INVALID" });
+    await expect(store.setKeyframeCurve(id, clipId, { property: "alpha", offset_us: 5, curve: null })).rejects.toMatchObject({ code: "KEYFRAME_NOT_FOUND" });
+    await expect(store.setKeyframeCurve(id, clipId, { property: "alpha", offset_us: 0, curve: [1.2, 0, 1, 1] })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+
+    const { segments: [first, second] } = await store.splitSegment(id, clipId, 1_000_000);
+    const [start, cut] = first.keyframes;
+    expect(start.curve).toHaveLength(4);
+    expect(cut.curve).toBeUndefined();
+    // 缓出在一半的时间已经走了一大半
+    expect(cut.value).toBeGreaterThan(0.1 + 0.9 * 0.5);
+    expect(second.keyframes[0]).toMatchObject({ offset_us: 0, value: cut.value });
+    expect(second.keyframes[0].curve).toHaveLength(4);
+    expect(second.keyframes[1]).toEqual({ property: "alpha", offset_us: 1_000_000, value: 1 });
+    const plain = only(await store.setKeyframeCurve(id, second.id, { property: "alpha", offset_us: 0, curve: null })).find((item) => item.id === second.id);
+    expect(plain.keyframes[0].curve).toBeUndefined();
+  });
+
+  it("writes FreeCurveInOut handles and a mode 1 speed into the draft", async () => {
+    const { store, id, clipId } = await videoClip();
+    const points = speedPreset("flash_out");
+    await store.updateSegment(id, clipId, { curve_speed: { name: "闪出", points } });
+    const project = await store.addKeyframes(id, clipId, { keyframes: [
+      { property: "uniform_scale", offset_us: 0, value: 1, curve: [0.32, 0.94, 0.6, 1] },
+      { property: "uniform_scale", offset_us: 400_000, value: 1.5 },
+      { property: "uniform_scale", offset_us: 800_000, value: 1 },
+    ] });
+    const content = JSON.parse(serializeDraft({ project, media: await store.mediaInfos(project), ...draftInputs(project) }));
+    const segment = content.tracks[0].segments[0];
+    const [a, b, c] = segment.common_keyframes[0].keyframe_list;
+    // 和 CapCut 界面写的 Cubic Out 一样：起点 right_control = (0.32·Δt, 0.94·Δv)，终点 left_control = (−0.4·Δt, 0)
+    expect(a).toMatchObject({ curveType: "FreeCurveInOut", left_control: { x: 0, y: 0 }, right_control: { x: 128_000, y: expect.closeTo(0.47, 12) } });
+    expect(b).toMatchObject({ curveType: "FreeCurveInOut", left_control: { x: -160_000, y: 0 }, right_control: { x: 0, y: 0 } });
+    expect(c).toMatchObject({ curveType: "Line" });
+    const speed = content.materials.speeds.find((item) => segment.extra_material_refs.includes(item.id));
+    expect(speed).toMatchObject({ mode: 1, type: "speed", curve_speed: { name: "闪出", speed_points: points } });
+    expect(speed.speed).toBeCloseTo(1 / seqOf(points).factor, 6);
+    expect(segment.target_timerange.duration).toBe(project.tracks[0].segments[0].timeline.duration_us);
+    expect(segment.source_timerange.duration).toBe(3_000_000);
   });
 });
 

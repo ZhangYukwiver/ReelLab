@@ -8,6 +8,7 @@ import { isLocalRuntime } from "../localAi.mjs";
 import { AnalysisError, requestAnalysis } from "../videoAnalysis.mjs";
 import { animationEnums, members } from "./catalog.mjs";
 import { requestCompletion } from "./chat.mjs";
+import { KEYFRAME_CURVES, MAX_SPEED_POINTS, SPEED_CURVES, speedPreset } from "./curves.mjs";
 import { EditError, invalid } from "./errors.mjs";
 import { MAX_PAGE_SECONDS } from "./film/pages.mjs";
 import { IMAGES_PER_TURN, generateImage, generateVideo } from "./generate.mjs";
@@ -39,8 +40,10 @@ import { MODEL_HINT, mergeCaptions, placeLines, transcribeMedia } from "./transc
 //   delete_clip             deleteSegment
 //   get_clip                getSegment
 //   add_keyframes           addKeyframes
+//   set_keyframe_curve      setKeyframeCurve
 //   list_keyframes          listKeyframes
 //   remove_keyframe         removeKeyframe
+//   set_curve_speed         updateSegment（curve_speed）
 //   add_effect              addEffect
 //   add_filter              addFilter
 //   add_animation           addAnimation
@@ -172,6 +175,8 @@ function clipSummary(segment, library) {
     if (segment.material_name) clip.name = segment.material_name;
     if (segment.kind !== "image" && segment.source) Object.assign(clip, { source_start: seconds(segment.source.start_us), source_duration: seconds(segment.source.duration_us) });
     if (segment.speed !== undefined && Math.abs(segment.speed - 1) > 1e-9) clip.speed = Math.round(segment.speed * 1000) / 1000;
+    // 曲线变速时 speed 是平均倍速
+    if (segment.curve_speed) clip.curve_speed = segment.curve_speed.name;
     if (segment.volume !== undefined && segment.volume !== 1) clip.volume = segment.volume;
     if (segment.fit && segment.fit !== "contain") clip.fit = segment.fit;
   }
@@ -362,6 +367,7 @@ export function buildSystemPrompt({ project, media, goal = "", freeOnly = false,
     "- 背景音乐比成片短时，把同一段音乐在同一条音频轨道上接着多放几段来循环，最后一段截短；不要靠变速拉长（会变慢变调）。",
     "- 做卡点、快闪这类跟着音乐切的片子：先用 detect_beats 测配乐的节拍，再把每一刀、文字出现和转场放在拍点上（重拍适合放转场或闪白），不要凭感觉估。参考视频解析结果里写了切点和拍点的关系，照着那个节奏来。",
     "- 视频片段可以用 source_start / source_duration 截取素材里的一段；时间线上的时长 = 截取长度 ÷ 倍速，不能超出素材本身的长度。图片最长 3 小时，不能变速。",
+    "- 用户要剪映的曲线变速（蒙太奇、英雄时刻、子弹时间、跳接、闪进、闪出、自定义）用 set_curve_speed；要关键帧动画走得有快慢（缓入、缓出、回弹、自定义曲线）就在 add_keyframes 里给 curve，或用 set_keyframe_curve 改已有的。",
     "- 工具参数里没有 end：时间线里的 end 只是给你看的结束时间，改时长用 duration。",
     "- 位置、缩放、旋转、不透明度都写在 transform 对象里，例如 \"transform\": {\"transform_y\": -0.8}。transform_x / transform_y 以画布中心为 0，单位是半个画布宽 / 高，x 向右为正，y 向上为正（字幕一般放在 -0.8 左右，add_subtitles 默认就放在这里）。",
     "- 分屏、宫格、拼图（七分屏、左右或上下分屏、九宫格等）：先把片段放上时间线，再用 arrange_grid 一次排好，不要自己算 transform 和蒙版。",
@@ -489,9 +495,30 @@ const MEDIA_FIELDS = {
 const SUBTITLE_STYLE = ["font_size", "color", "alignment", "font_family", "bold", "italic", "underline", "opacity",
   "letter_spacing", "line_spacing", "auto_wrapping", "max_line_width", "border", "background", "shadow"];
 
-const FEATURES = ["effects", "filters", "animations", "transition", "fade", "mask", "chroma", "background_filling", "mix_mode", "crop", "border", "background", "shadow", "bubble", "text_effect"];
+const FEATURES = ["effects", "filters", "animations", "transition", "fade", "mask", "chroma", "background_filling", "mix_mode", "crop", "border", "background", "shadow", "bubble", "text_effect", "curve_speed"];
 
 const KEYFRAME_PROPERTIES = ["transform_x", "transform_y", "scale_x", "scale_y", "uniform_scale", "rotation", "alpha", "volume", "brightness", "contrast", "saturation"];
+
+// 剪映的关键帧曲线：曲线记在一段的起点那一帧上，管它到下一帧怎么走
+const KEYFRAME_CURVE_FIELDS = {
+  curve: choice(["linear", ...Object.keys(KEYFRAME_CURVES), "custom"],
+    "从这一帧到下一帧怎么走：linear 匀速（默认），ease_in 缓入（先慢后快），ease_out 缓出（先快后慢），ease_in_out 缓入缓出，back 回弹（冲过头再回来），custom 自定义（配合 bezier）"),
+  bezier: { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4, description: "curve 是 custom 时的 [x1, y1, x2, y2]，同 CSS cubic-bezier：x1、x2 在 0 到 1，y 超出 0–1 就是冲过头" },
+};
+
+/** 工具参数里的曲线 → 存下来的样子：没给是 undefined（不动），linear 是 null，预设换成四个数。 */
+function keyframeCurve(item) {
+  if (!has(item, "curve") && !has(item, "bezier")) return undefined;
+  const name = has(item, "curve") ? item.curve : "custom";
+  if (name === "linear") return null;
+  if (name === "custom") {
+    if (!has(item, "bezier")) throw invalid("KEYFRAME_CURVE_INVALID", "curve 是 custom 时要给 bezier：[x1, y1, x2, y2]");
+    return item.bezier;
+  }
+  return Object.hasOwn(KEYFRAME_CURVES, name) ? KEYFRAME_CURVES[name].curve : name;
+}
+
+const SPEED_POINT = obj({ x: num("在截取的素材里的位置，0 是开头、1 是结尾", { minimum: 0, maximum: 1 }), y: num("这一刻的倍速，0.1 到 10", { minimum: 0.1, maximum: 10 }) }, ["x", "y"]);
 
 // ---------- 工具 ----------
 
@@ -1611,6 +1638,7 @@ const TOOLS = [
           property: choice(KEYFRAME_PROPERTIES, "属性：transform_x/transform_y 位置（-1 到 1），scale_x/scale_y/uniform_scale 缩放（0.01 到 100），rotation 旋转（-360 到 360），alpha 不透明度（0 到 1），volume 音量（0 到 2），brightness/contrast/saturation 亮度/对比度/饱和度（-1 到 1）"),
           offset: num("从片段开头算起的秒数", { minimum: 0 }),
           value: num("这个时间点的值"),
+          ...KEYFRAME_CURVE_FIELDS,
         }, ["property", "offset", "value"]),
       },
     }, ["clip_id", "keyframes"]),
@@ -1618,9 +1646,46 @@ const TOOLS = [
     label: (args) => Array.isArray(args.keyframes) ? `加了 ${args.keyframes.length} 个关键帧` : "加了关键帧",
     run: async (ctx, args) => ctx.store.addKeyframes(ctx.projectId, args.clip_id, {
       keyframes: Array.isArray(args.keyframes)
-        ? args.keyframes.map((item) => ({ ...pick(item ?? {}, ["property", "value"]), offset_us: micros(item?.offset) }))
+        ? args.keyframes.map((item) => {
+          const curve = keyframeCurve(item ?? {});
+          return { ...pick(item ?? {}, ["property", "value"]), offset_us: micros(item?.offset), ...(curve !== undefined ? { curve } : {}) };
+        })
         : args.keyframes,
     }),
+  },
+  {
+    name: "set_keyframe_curve",
+    description: "改片段上某个关键帧到下一帧之间的曲线（剪映的关键帧曲线），值不变。最后一帧后面没有下一帧，设不了。",
+    parameters: obj({
+      clip_id: CLIP_ID,
+      property: choice(KEYFRAME_PROPERTIES, "属性"),
+      offset: num("这一段起点那一帧的时间，从片段开头算起的秒数", { minimum: 0 }),
+      ...KEYFRAME_CURVE_FIELDS,
+    }, ["clip_id", "property", "offset", "curve"]),
+    write: true,
+    label: (args) => `把关键帧曲线改成了${KEYFRAME_CURVES[args.curve]?.name ?? (args.curve === "custom" ? "自定义" : "匀速")}`,
+    run: async (ctx, args) => ctx.store.setKeyframeCurve(ctx.projectId, args.clip_id, {
+      property: args.property, offset_us: micros(args.offset), curve: keyframeCurve(args) ?? null,
+    }),
+  },
+  {
+    name: "set_curve_speed",
+    description: "给视频片段套剪映的曲线变速（同一段里忽快忽慢）。素材截取的范围不变，片段在时间线上的长度按曲线重算（关键帧按比例跟着挪），变长时后面挨着的片段会挡住，先挪开。"
+      + "preset 选预设；要自己调就给 points（x 从 0 开始、到 1 结束、一直变大，最多 30 个点）。preset 是 none 就去掉曲线，按现在的平均倍速匀速放（时长不变）；用 update_clip 改 speed 也会换回常规变速。",
+    parameters: obj({
+      clip_id: CLIP_ID,
+      preset: choice(["none", ...Object.keys(SPEED_CURVES)],
+        "none 去掉曲线变速，custom 自定义（默认五个 1 倍的点，配合 points），montage 蒙太奇，hero 英雄时刻，bullet 子弹时间，jump_cut 跳接，flash_in 闪进，flash_out 闪出"),
+      points: { type: "array", items: SPEED_POINT, minItems: 2, maxItems: MAX_SPEED_POINTS, description: "自己调的速度点；给了就用它，曲线名字照 preset" },
+    }, ["clip_id", "preset"]),
+    write: true,
+    label: (args) => (args.preset === "none" ? "去掉了曲线变速" : `套了曲线变速「${SPEED_CURVES[args.preset]?.name ?? "自定义"}」`),
+    run: async (ctx, args) => {
+      if (args.preset === "none") return ctx.store.updateSegment(ctx.projectId, args.clip_id, { curve_speed: null });
+      const preset = Object.hasOwn(SPEED_CURVES, args.preset) ? args.preset : "custom";
+      const points = Array.isArray(args.points) ? args.points.map((point) => pick(point ?? {}, ["x", "y"])) : speedPreset(preset);
+      return ctx.store.updateSegment(ctx.projectId, args.clip_id, { curve_speed: { name: SPEED_CURVES[preset].name, points } });
+    },
   },
   {
     name: "list_keyframes",
@@ -1785,7 +1850,7 @@ const TOOLS = [
     description: "去掉片段上的某一类设置。",
     parameters: obj({
       clip_id: CLIP_ID,
-      feature: choice(FEATURES, "effects 特效，filters 滤镜，animations 动画，transition 转场，fade 淡入淡出，mask 蒙版，chroma 抠像，background_filling 背景填充，mix_mode 混合模式，crop 裁剪，border 描边，background 文字背景，shadow 阴影，bubble 气泡，text_effect 花字"),
+      feature: choice(FEATURES, "effects 特效，filters 滤镜，animations 动画，transition 转场，fade 淡入淡出，mask 蒙版，chroma 抠像，background_filling 背景填充，mix_mode 混合模式，crop 裁剪，border 描边，background 文字背景，shadow 阴影，bubble 气泡，text_effect 花字，curve_speed 曲线变速（按平均倍速匀速放，时长不变）"),
     }, ["clip_id", "feature"]),
     write: true,
     label: () => "去掉了片段上的一项效果",
@@ -2066,6 +2131,7 @@ const EDIT_ERROR_TEXT = {
   KEYFRAME_PROPERTY_INVALID: "这个片段不支持这种关键帧",
   KEYFRAME_PROPERTY_CONFLICT: "整体缩放和单向缩放的关键帧不能同时用",
   KEYFRAME_NOT_FOUND: "没有这个关键帧",
+  KEYFRAME_CURVE_INVALID: "关键帧曲线设不了",
   SPLIT_OFFSET_INVALID: "切点要在片段中间",
   TRACK_ORDER_INVALID: "轨道顺序要包含全部轨道",
   TRACK_UPDATE_INVALID: "轨道设置不对",

@@ -247,9 +247,9 @@ function applyKeyframes(ids, instance, segment) {
     if (!property) throw invalid("DRAFT_FEATURE_INVALID", "Unknown keyframe property");
     if (instance instanceof AudioSegment) {
       if (property !== "volume") throw invalid("DRAFT_FEATURE_INVALID", "Audio supports volume keyframes only");
-      instance.addKeyframe(ids, pyInt(item.offset_us), num(item.value));
+      instance.addKeyframe(ids, pyInt(item.offset_us), num(item.value), item.curve ?? null);
     } else {
-      instance.addKeyframe(ids, property, pyInt(item.offset_us), num(item.value));
+      instance.addKeyframe(ids, property, pyInt(item.offset_us), num(item.value), item.curve ?? null);
     }
   }
 }
@@ -503,6 +503,7 @@ function buildContent({
         clipSettings: clipSettings(segment.transform ?? null, segment.fit ?? "contain", info, canvas),
       });
     if (segment.speed !== null && segment.speed !== undefined) instance.speed.speed = num(segment.speed);
+    if (segment.curve_speed && info.kind === "video") instance.speed.setCurve(ids, segment.curve_speed.name, segment.curve_speed.points);
     instance.segmentId = draftHashId(segment.id, "segment");
     applyFeatures(ids, instance, segment);
     script.addSegment(instance, ref);

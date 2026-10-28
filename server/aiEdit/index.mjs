@@ -9,6 +9,7 @@ import { isLocalRuntime } from "../localAi.mjs";
 import { MAX_TOOL_CALLS, parseEditConfig, runConversation, sealHistory, trimHistory } from "./chat.mjs";
 import { parseAttachments, describeAttachments } from "./attachments.mjs";
 import { runCliConversation } from "./cliTurn.mjs";
+import { KEYFRAME_CURVES } from "./curves.mjs";
 import { EditError } from "./errors.mjs";
 import { createFilmStudio } from "./film/studio.mjs";
 import { backgroundNote, parseGenerateConfig } from "./generate.mjs";
@@ -65,6 +66,9 @@ const BOARD_EDITS = new Map([
   ["add_mask", new Set(["clip_id", "mask_type"])],
   ["set_mix_mode", new Set(["clip_id", "mode"])],
   ["clear_clip_feature", new Set(["clip_id", "feature"])],
+  // 属性卡里的曲线：关键帧之间怎么走、曲线变速
+  ["set_keyframe_curve", null],
+  ["set_curve_speed", null],
 ]);
 // 看板上套剪映效果：工具名 → [参数名, 说法]
 const FEATURE_EDITS = {
@@ -76,6 +80,7 @@ const ANIMATION_KINDS = { in: "入场动画", out: "出场动画", group: "组�
 const FEATURE_LABELS = {
   transition: "转场", effects: "特效", filters: "滤镜", animations: "动画", fade: "淡入淡出", mask: "蒙版", chroma: "抠像",
   background_filling: "背景填充", mix_mode: "混合模式", crop: "裁剪", border: "描边", background: "文字背景", shadow: "阴影", bubble: "气泡", text_effect: "花字",
+  curve_speed: "曲线变速",
 };
 // 一批手动改动（多选、整组挪、主轨磁吸重排）最多几条、请求体最大多少；超过 8 条给模型的说明并成一句
 const MAX_BATCH_EDITS = 200;
@@ -402,6 +407,17 @@ function describeEdit(name, args, before, after, result) {
   if (name === "clear_clip_feature") {
     const kind = FEATURE_LABELS[args.feature] ?? "效果";
     return { label: `去掉${label}的${kind}`, note: `去掉了${ref}的${kind}` };
+  }
+  if (name === "set_curve_speed") {
+    const now = locate(after, args.clip_id)?.segment;
+    if (!now?.curve_speed) return { label: `去掉${label}的曲线变速`, note: `去掉了${ref}的曲线变速，按平均倍速匀速放，时长没变` };
+    const named = `曲线变速「${now.curve_speed.name}」`;
+    const moved = now.keyframes?.length && now.timeline.duration_us !== was?.segment.timeline.duration_us ? "，关键帧按比例跟着挪了" : "";
+    return { label: `给${label}套${named}`, note: `给${ref}套了${named}，片段现在长 ${seconds(now.timeline.duration_us)} 秒${moved}` };
+  }
+  if (name === "set_keyframe_curve") {
+    const curve = KEYFRAME_CURVES[args.curve]?.name ?? (args.curve === "custom" ? "自定义曲线" : "匀速");
+    return { label: `把${label}的关键帧改成${curve}`, note: `把${ref}的 ${args.property} 关键帧从第 ${seconds(micros(args.offset))} 秒那一帧起改成了${curve}` };
   }
   if (name === "split_clip") {
     const at = typeof micros(args.offset) === "number" && was ? `在 ${seconds(was.segment.timeline.start_us + micros(args.offset))} 秒处` : "";

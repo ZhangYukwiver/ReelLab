@@ -63,23 +63,34 @@ class KeyframeList {
     this.keyframes = [];
   }
 
-  add(ids, timeOffset, value) {
-    this.keyframes.push({ id: ids(), timeOffset, value });
+  /** curve 是这一帧到下一帧的曲线 [x1, y1, x2, y2]（curves.mjs），没有是直线 */
+  add(ids, timeOffset, value, curve = null) {
+    this.keyframes.push({ id: ids(), timeOffset, value, curve });
     this.keyframes.sort((a, b) => a.timeOffset - b.timeOffset);
   }
 
   exportJson() {
+    // 带曲线的一段照 CapCut 界面写法：两头的帧都标 FreeCurveInOut，控制柄是相对这一帧的（微秒，数值差），
+    // 起点的 right_control = (x1·Δt, y1·Δv)，终点的 left_control = ((x2−1)·Δt, (y2−1)·Δv)
+    const handle = (from, to, x, y) => ({ x: F(Math.round(x * (to.timeOffset - from.timeOffset))), y: F(y * (to.value - from.value)) });
+    const zero = { x: F(0), y: F(0) };
     return {
       id: this.id,
-      keyframe_list: this.keyframes.map((frame) => ({
-        curveType: "Line",
-        graphID: "",
-        left_control: { x: F(0), y: F(0) },
-        right_control: { x: F(0), y: F(0) },
-        id: frame.id,
-        time_offset: frame.timeOffset,
-        values: [F(frame.value)],
-      })),
+      keyframe_list: this.keyframes.map((frame, index) => {
+        const prev = this.keyframes[index - 1];
+        const next = this.keyframes[index + 1];
+        const outgoing = next && frame.curve ? frame.curve : null;
+        const incoming = prev?.curve ?? null;
+        return {
+          curveType: outgoing || incoming ? "FreeCurveInOut" : "Line",
+          graphID: "",
+          left_control: incoming ? handle(prev, frame, incoming[2] - 1, incoming[3] - 1) : zero,
+          right_control: outgoing ? handle(frame, next, outgoing[0], outgoing[1]) : zero,
+          id: frame.id,
+          time_offset: frame.timeOffset,
+          values: [F(frame.value)],
+        };
+      }),
       material_id: "",
       property_type: KEYFRAME_PROPERTY[this.property],
     };
@@ -90,10 +101,19 @@ class Speed {
   constructor(ids, speed) {
     this.id = ids();
     this.speed = speed;
+    this.curve = null;
+  }
+
+  /** 曲线变速：mode 1，speed_points 是 { x, y }（x 在素材里归一），speed 记平均倍速（字节 VE 也这样一起交给引擎） */
+  setCurve(ids, name, points) {
+    this.curve = { id: ids(), name, points };
   }
 
   exportJson() {
-    return { curve_speed: null, id: this.id, mode: 0, speed: F(this.speed), type: "speed" };
+    const curve = this.curve
+      ? { id: this.curve.id, name: this.curve.name, speed_points: this.curve.points.map((point) => ({ x: F(point.x), y: F(point.y) })) }
+      : null;
+    return { curve_speed: curve, id: this.id, mode: curve ? 1 : 0, speed: F(this.speed), type: "speed" };
   }
 }
 
@@ -662,7 +682,7 @@ class VisualSegment extends MediaSegment {
     this.animations = null;
   }
 
-  addKeyframe(ids, property, timeOffset, value) {
+  addKeyframe(ids, property, timeOffset, value, curve = null) {
     let key = property;
     if ((key === "scale_x" || key === "scale_y") && this.uniformScale) {
       this.uniformScale = false;
@@ -673,11 +693,11 @@ class VisualSegment extends MediaSegment {
     let list = this.commonKeyframes.find((item) => item.property === key);
     if (!list) {
       list = new KeyframeList(ids, key);
-      list.add(ids, timeOffset, value);
+      list.add(ids, timeOffset, value, curve);
       this.commonKeyframes.push(list);
       return;
     }
-    list.add(ids, timeOffset, value);
+    list.add(ids, timeOffset, value, curve);
   }
 
   exportJson() {
@@ -862,15 +882,15 @@ export class AudioSegment extends MediaSegment {
     this.extraMaterialRefs.push(this.fade.id);
   }
 
-  addKeyframe(ids, timeOffset, volume) {
+  addKeyframe(ids, timeOffset, volume, curve = null) {
     let list = this.commonKeyframes.find((item) => item.property === "volume");
     if (!list) {
       list = new KeyframeList(ids, "volume");
-      list.add(ids, timeOffset, volume);
+      list.add(ids, timeOffset, volume, curve);
       this.commonKeyframes.push(list);
       return;
     }
-    list.add(ids, timeOffset, volume);
+    list.add(ids, timeOffset, volume, curve);
   }
 
   exportJson() {

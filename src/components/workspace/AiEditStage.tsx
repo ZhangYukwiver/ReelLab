@@ -4,7 +4,7 @@ import { Pause, Play, Quote, RotateCcw, Scissors, SquareDashed, Sticker, Trash2,
 import { pageOf, type AiEditMediaItem, type EditCanvas, type EditMediaSegment, type EditSegment, type EditTextSegment, type EditTrack, type EditTransform } from "../../services/aiEdit";
 import {
   activeFrame, blendMode, clipLabel, colorFilter, cropClipPath, cssTransform, effectiveTransform, featureLook, featureName, findSegment, formatClock, hasScaleKeyframes,
-  layerBox, layerRect, maskCss, mediaIdFromPath, mediaVolume, nextSegmentAfter, overlayFilter, playbackRate, rgba, sourceTimeUs, textCss, US_PER_SECOND,
+  layerBox, layerRect, maskCss, mediaIdFromPath, mediaVolume, nextSegmentAfter, overlayFilter, playbackRate, rgba, sourceTimeUs, speedAtUs, textCss, US_PER_SECOND,
   type MaskSpec, type Size,
 } from "./aiEditModel";
 import { dragRect, fullTransform, layersInRect, regionBox, SNAP_PX, splitOffset, type Rect } from "./aiEditBoardEdit";
@@ -1005,7 +1005,7 @@ function MediaElement({ kind, url, segment, track, time, playing, active, style,
     }
     const target = sourceTimeUs(segment, time) / US_PER_SECOND;
     want.current = target;
-    const rate = playbackRate(segment.speed);
+    const rate = playbackRate(speedAtUs(segment, time));
     if (element.playbackRate !== rate) element.playbackRate = rate;
     (element as HTMLMediaElement & { preservesPitch?: boolean }).preservesPitch = !segment.change_pitch;
     const sound = mediaVolume(segment, track, time - segment.timeline.start_us);

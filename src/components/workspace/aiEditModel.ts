@@ -1,6 +1,7 @@
 import type {
   AiEditCatalogKind, EditCanvas, EditFit, EditKeyframe, EditMediaSegment, EditProject, EditSegment, EditTextSegment, EditTimeRange, EditTrack, EditTransform,
 } from "../../services/aiEdit";
+import { curveSource, curveSpeedAt, easeAt } from "./aiEditCurves";
 
 // AI 剪辑看板的纯计算：时长、某一时刻该画哪些片段、素材摆放、刻度与时间格式。只管怎么画，手动改动的换算在 aiEditBoardEdit.ts。
 // 坐标约定同剪映 / pyJianYingDraft：transform_x/y 以半个画布宽/高为单位，y 向上为正；rotation 顺时针为正。
@@ -83,11 +84,20 @@ export function activeFrame(project: Pick<EditProject, "tracks"> | null | undefi
   return frame;
 }
 
-/** 片段在 timeUs 时对应的素材时间（微秒）：source.start + (t - timeline.start) × speed。 */
-export function sourceTimeUs(segment: Pick<EditMediaSegment, "timeline" | "source" | "speed">, timeUs: number): number {
+/** 片段在 timeUs 时对应的素材时间（微秒）：source.start + (t - timeline.start) × speed；曲线变速按曲线走（aiEditCurves.ts）。 */
+export function sourceTimeUs(segment: Pick<EditMediaSegment, "timeline" | "source" | "speed" | "curve_speed">, timeUs: number): number {
   const offset = Math.min(Math.max(0, timeUs - segment.timeline.start_us), segment.timeline.duration_us);
+  if (segment.curve_speed && segment.timeline.duration_us > 0) {
+    return segment.source.start_us + curveSource(segment.curve_speed.points, offset / segment.timeline.duration_us) * segment.source.duration_us;
+  }
   const speed = segment.speed > 0 ? segment.speed : 1;
   return Math.min(segment.source.start_us + offset * speed, end(segment.source));
+}
+
+/** 片段在 timeUs 那一刻的倍速：常规变速就是 speed，曲线变速是曲线上那一刻的值。 */
+export function speedAtUs(segment: Pick<EditMediaSegment, "timeline" | "speed" | "curve_speed">, timeUs: number): number {
+  if (!segment.curve_speed || segment.timeline.duration_us <= 0) return segment.speed > 0 ? segment.speed : 1;
+  return curveSpeedAt(segment.curve_speed.points, (timeUs - segment.timeline.start_us) / segment.timeline.duration_us);
 }
 
 /** 浏览器 playbackRate 的可用范围是 1/16–16。 */
@@ -95,7 +105,7 @@ export const playbackRate = (speed: number) => Math.min(16, Math.max(0.0625, Num
 
 // ---------- 关键帧 ----------
 
-/** 某属性在片段内偏移 offsetUs 处的关键帧值：两帧之间线性插值，两头之外取最近一帧；没有这个属性的关键帧时为 null。 */
+/** 某属性在片段内偏移 offsetUs 处的关键帧值：两帧之间按前一帧的曲线走（没有曲线是直线），两头之外取最近一帧；没有这个属性的关键帧时为 null。 */
 export function keyframeValue(keyframes: EditKeyframe[] | undefined, property: string, offsetUs: number): number | null {
   const points = (keyframes ?? []).filter((item) => item.property === property).sort((a, b) => a.offset_us - b.offset_us);
   if (!points.length) return null;
@@ -105,7 +115,7 @@ export function keyframeValue(keyframes: EditKeyframe[] | undefined, property: s
     if (offsetUs <= right.offset_us) {
       const left = points[index - 1]!;
       const span = right.offset_us - left.offset_us;
-      return span <= 0 ? right.value : left.value + (right.value - left.value) * ((offsetUs - left.offset_us) / span);
+      return span <= 0 ? right.value : left.value + (right.value - left.value) * easeAt(left.curve, (offsetUs - left.offset_us) / span);
     }
   }
   return points[points.length - 1]!.value;
@@ -529,7 +539,8 @@ export function transitionReach(segments: readonly EditSegment[] | null | undefi
 /** 片段身上挂的东西，给片段块的提示文字用（「转场 叠化 · 淡入 0.5 秒 · 2 个关键帧」）。 */
 export function clipExtras(segment: EditSegment, reach: TransitionReach = "next"): string[] {
   const extras: string[] = [];
-  if ("speed" in segment && segment.speed && Math.abs(segment.speed - 1) > 1e-6) extras.push(`${round(segment.speed, 2)} 倍速`);
+  if ("curve_speed" in segment && segment.curve_speed) extras.push(`曲线变速 ${segment.curve_speed.name}`);
+  else if ("speed" in segment && segment.speed && Math.abs(segment.speed - 1) > 1e-6) extras.push(`${round(segment.speed, 2)} 倍速`);
   if ("volume" in segment && segment.kind !== "image" && segment.volume !== undefined && segment.volume !== 1) extras.push(segment.volume === 0 ? "静音" : `音量 ${Math.round(segment.volume * 100)}%`);
   if ("transition" in segment && segment.transition) {
     extras.push(`转场 ${featureName(segment.transition.transition_type)}${reach === "last" ? "（最后一段，不会出现）" : reach === "gap" ? "（后面隔着空当）" : ""}`);
@@ -720,7 +731,7 @@ const KIND_NAMES: Record<EditSegment["kind"], string> = {
   video: "视频", image: "图片", audio: "音频", text: "文字", sticker: "贴纸", track_effect: "特效", track_filter: "滤镜",
 };
 const FIT_NAMES: Record<EditFit, string> = { contain: "完整显示", cover: "铺满画面", stretch: "拉伸铺满" };
-const KEYFRAME_NAMES: Record<string, string> = {
+export const KEYFRAME_NAMES: Record<string, string> = {
   transform_x: "左右位置", position_x: "左右位置", transform_y: "上下位置", position_y: "上下位置", uniform_scale: "缩放", scale_x: "横向缩放",
   scale_y: "纵向缩放", rotation: "旋转", alpha: "不透明度", volume: "音量", brightness: "亮度", contrast: "对比度", saturation: "饱和度",
 };
@@ -891,9 +902,11 @@ export function clipDetail(
       if (segment.kind !== "image") {
         rows.push({ label: "截取", value: `从素材${secondMark(segment.source.start_us)}截取 ${spokenDuration(segment.source.duration_us)}` });
         const speed = segment.speed > 0 ? segment.speed : 1;
+        const pitch = segment.change_pitch ? "声音跟着变调" : "声音不变调";
         rows.push({
           label: "速度",
-          value: Math.abs(speed - 1) < 1e-6 ? "原速" : `${speed < 1 ? "放慢" : "加快"}到 ${trim(speed)} 倍，${segment.change_pitch ? "声音跟着变调" : "声音不变调"}`,
+          value: segment.curve_speed ? `曲线变速「${segment.curve_speed.name}」，平均 ${trim(speed)} 倍，${pitch}`
+            : Math.abs(speed - 1) < 1e-6 ? "原速" : `${speed < 1 ? "放慢" : "加快"}到 ${trim(speed)} 倍，${pitch}`,
         });
         const volume = segment.volume ?? 1;
         rows.push({ label: "音量", value: `${volume <= 0 ? "静音" : percent(volume)}${track?.mute ? "（整条轨道已静音）" : ""}` });

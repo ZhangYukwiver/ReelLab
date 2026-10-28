@@ -284,7 +284,10 @@ export interface EditCrop {
   upper_left_x: number; upper_left_y: number; upper_right_x: number; upper_right_y: number;
   lower_left_x: number; lower_left_y: number; lower_right_x: number; lower_right_y: number;
 }
-export interface EditKeyframe { property: string; offset_us: number; value: number }
+/** curve：从这一帧到下一帧怎么走（剪映的关键帧曲线，同 CSS cubic-bezier 的四个数），没有是直线 */
+export interface EditKeyframe { property: string; offset_us: number; value: number; curve?: [number, number, number, number] }
+/** 剪映的曲线变速：x 是在截取的素材里的位置（0–1），y 是那一刻的倍速；name 是预设名（蒙太奇、自定义…） */
+export interface EditCurveSpeed { name: string; points: Array<{ x: number; y: number }> }
 
 interface EditSegmentBase { id: string; timeline: EditTimeRange; keyframes?: EditKeyframe[] }
 
@@ -296,7 +299,9 @@ export interface EditMediaSegment extends EditSegmentBase {
   path: string;
   source: EditTimeRange;
   volume: number;
+  /** 曲线变速时是平均倍速 */
   speed: number;
+  curve_speed?: EditCurveSpeed | null;
   change_pitch?: boolean;
   fit?: EditFit;
   transform?: EditTransform | null;
@@ -627,7 +632,9 @@ export async function sendAiEditMessage(connection: Connection, id: string, text
 export type AiEditClipEdit = "move_clip" | "update_clip" | "split_clip" | "delete_clip" | "duplicate_clip" | "update_track" | "reorder_tracks" | "set_canvas"
   | "add_marker" | "remove_marker" | "add_subtitle_line"
   // 左栏「剪映素材」点了直接套上、属性卡里去掉
-  | "add_transition" | "add_filter" | "add_effect" | "add_animation" | "add_mask" | "set_mix_mode" | "clear_clip_feature";
+  | "add_transition" | "add_filter" | "add_effect" | "add_animation" | "add_mask" | "set_mix_mode" | "clear_clip_feature"
+  // 属性卡里的曲线：关键帧之间怎么走、曲线变速
+  | "set_keyframe_curve" | "set_curve_speed";
 export interface AiEditEditCall { name: AiEditClipEdit; arguments: Record<string, unknown> }
 
 /** 看板上手动剪一下（挪、裁、切、删、复制、改文字和位置大小、静音、调轨道层级）；AI 正在剪或别的改动没做完时本机服务会拒绝。 */

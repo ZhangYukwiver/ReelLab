@@ -96,6 +96,8 @@ p{margin:0;font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto 
 const FEATURE_NAMES = {
   effects: "特效", filters: "滤镜", animations: "动画", transition: "转场", mask: "蒙版", chroma: "抠像", background_filling: "背景填充",
   mix_mode: "混合模式", keyframes: "关键帧", crop: "裁剪", bubble: "文字气泡", text_effect_id: "花字",
+  // ponytail: film.html 只有恒定倍速，曲线变速按平均倍速出（时长对得上）；要曲线得给 openfilm 的片段加时间映射
+  curve_speed: "曲线变速",
 };
 const TRACK_DROPS = { sticker: "贴纸", effect: "特效轨", filter: "滤镜轨" };
 
