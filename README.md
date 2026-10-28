@@ -70,6 +70,6 @@ npm run desktop:build:mac
 拆片工坊本身以 [MIT](LICENSE) 许可证发布。用到的第三方代码：
 
 - [pyJianYingDraft](https://github.com/GuanYixuan/pyJianYingDraft)（Apache-2.0）：剪映草稿的结构、特效 / 滤镜 / 转场 / 动画等目录，草稿生成和草稿箱写入照它和 [JianYingAPI](https://github.com/ZhangYukwiver/JianYingAPI) 用 Node 重写，不需要 Python 和 ffprobe。许可证见 [server/licenses/pyJianYingDraft-Apache-2.0.txt](server/licenses/pyJianYingDraft-Apache-2.0.txt)。
-- 网页片段的宿主约定、film.html 的读写和播放（`server/aiEdit/film/vendor/`、`film/host.mjs`）用的是一个第三方开源项目（MIT），许可证见 [server/licenses/](server/licenses/)。
+- [OpenFilm](https://github.com/openfilm/openfilm)（MIT）：网页片段的宿主约定、film.html 的读写和播放（`server/aiEdit/film/vendor/`、`film/host.mjs`）用的是它的代码，出片逐帧截图的做法，以及 AI 剪辑里时间线、右键菜单、属性输入和快捷键的部分交互也照它来。许可证见 [server/licenses/openfilm-LICENSE.txt](server/licenses/openfilm-LICENSE.txt)。
 
 本项目和剪映、火山方舟、OpenAI、Anthropic 及各视频生成服务都没有隶属或合作关系。
