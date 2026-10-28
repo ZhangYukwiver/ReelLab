@@ -945,12 +945,16 @@ export function Timeline({ height }: { height: number }) {
       { id: "trim-start", label: "裁掉播放头前面", shortcut: "trim-start", disabled: reason ?? trimRefusal("start"), onSelect: () => trimClips([id], "start") },
       { id: "trim-end", label: "裁掉播放头后面", shortcut: "trim-end", disabled: reason ?? trimRefusal("end"), onSelect: () => trimClips([id], "end") },
     ];
-    if (media && media.speed !== 1) {
+    if (media && (media.speed !== 1 || media.curve_speed)) {
       const stop = segment.timeline.start_us + media.source.duration_us;
       const crowded = track.segments.some((other) => other.id !== id && other.timeline.start_us >= segment.timeline.start_us + segment.timeline.duration_us - 1_000 && other.timeline.start_us < stop);
+      const steady: BoardEdit = { name: "update_clip", arguments: { clip_id: id, speed: 1, duration: media.source.duration_us / US_PER_SECOND, source_duration: media.source.duration_us / US_PER_SECOND } };
       entries.push({
         id: "speed", label: "恢复原速", disabled: reason ?? (crowded ? "恢复原速后会变长，压到后面的片段" : null),
-        onSelect: () => { void now.flushHeld().then(() => latest.current.runEdit("update_clip", { clip_id: id, speed: 1, duration: media.source.duration_us / US_PER_SECOND, source_duration: media.source.duration_us / US_PER_SECOND })); },
+        // 曲线变速先去掉曲线（平均倍速正好是 1 时光改倍速去不掉）
+        onSelect: () => {
+          void now.flushHeld().then(() => latest.current.runEdits(media.curve_speed ? [{ name: "set_curve_speed", arguments: { clip_id: id, preset: "none" } }, steady] : [steady], "恢复原速"));
+        },
       });
     }
     if (segment.kind !== "audio" && segment.kind !== "track_effect" && segment.kind !== "track_filter") {

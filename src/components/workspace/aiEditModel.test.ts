@@ -4,7 +4,7 @@ import type { EditMediaSegment, EditProject, EditSegment, EditTextSegment, EditT
 import {
   activeFrame, blendMode, clipDetail, clipExtras, colorName, cutPoints, draftBoxReasonText, clipLabel, clipPosition, colorFilter, cropClipPath, cssTransform, effectiveTransform, fadeGain,
   featureLook, featureName, featurePreviewRange, filmstripCount, filmstripTimes, findSegment, fitBox, formatClock, formatDuration, formatTick, hasScaleKeyframes, IDENTITY_TRANSFORM, keyframeValue, layerBox, layerRect, maskCss, mediaIdFromPath,
-  mediaThumbView, mediaVolume, nextCut, nextSegmentAfter, overlayFilter, pickTickStep, playbackRate, projectDuration, rgba, rulerTicks, secondMark, segmentAt, sourceTimeUs, spokenDuration, textCss,
+  mediaThumbView, mediaVolume, nextCut, nextSegmentAfter, overlayFilter, pickTickStep, playbackRate, projectDuration, rgba, rulerTicks, secondMark, segmentAt, sourceTimeUs, speedAtUs, spokenDuration, textCss,
   stepFrame, textFontPx, timeAtX, trackLabel, transitionReach, visibleExportNote,
 } from "./aiEditModel";
 import catalogJson from "../../../server/aiEdit/catalog.json";
@@ -107,6 +107,18 @@ describe("素材时间与倍速", () => {
     expect(sourceTimeUs(segment, 30 * S)).toBe(7 * S);
   });
 
+  it("曲线变速按曲线取素材时间，那一刻的倍速就是曲线上的值", () => {
+    // 先 2 倍再 0.5 倍：素材前一半（2 秒）放 1 秒…中间按倍速直线过渡
+    const curve_speed = { name: "自定义", points: [{ x: 0, y: 2 }, { x: 0.5, y: 2 }, { x: 0.5001, y: 0.5 }, { x: 1, y: 0.5 }] };
+    const segment = media("a", 10 * S, 5 * S, { source: { start_us: 3 * S, duration_us: 4 * S }, speed: 0.8, curve_speed });
+    expect(sourceTimeUs(segment, 10 * S)).toBe(3 * S);
+    expect(sourceTimeUs(segment, 11 * S)).toBeCloseTo(5 * S, -3);
+    expect(sourceTimeUs(segment, 15 * S)).toBeCloseTo(7 * S, -1);
+    expect(speedAtUs(segment, 10.5 * S)).toBeCloseTo(2);
+    expect(speedAtUs(segment, 13 * S)).toBeCloseTo(0.5);
+    expect(speedAtUs({ ...segment, curve_speed: null }, 13 * S)).toBe(0.8);
+  });
+
   it("playbackRate 夹在浏览器能放的范围", () => {
     expect(playbackRate(0.5)).toBe(0.5);
     expect(playbackRate(100)).toBe(16);
@@ -129,6 +141,13 @@ describe("关键帧", () => {
     expect(keyframeValue(keyframes, "alpha", 9 * S)).toBe(1);
     expect(keyframeValue(keyframes, "rotation", S)).toBeNull();
     expect(keyframeValue(undefined, "alpha", 0)).toBeNull();
+  });
+
+  it("带曲线的一段按曲线走：缓入一半时间走得少，缓出走得多", () => {
+    const eased = (curve: [number, number, number, number]) => [{ property: "alpha", offset_us: 0, value: 0, curve }, { property: "alpha", offset_us: 2 * S, value: 1 }];
+    expect(keyframeValue(eased([0.42, 0, 1, 1]), "alpha", S)!).toBeLessThan(0.4);
+    expect(keyframeValue(eased([0.32, 0.94, 0.6, 1]), "alpha", S)!).toBeGreaterThan(0.6);
+    expect(keyframeValue(eased([0.42, 0, 1, 1]), "alpha", 2 * S)).toBe(1);
   });
 
   it("关键帧覆盖静态变换，等比缩放同时改两个方向", () => {

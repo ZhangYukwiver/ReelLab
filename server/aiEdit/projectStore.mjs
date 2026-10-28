@@ -6,6 +6,7 @@ import { link, mkdir, open, readdir, readFile, realpath, stat, unlink } from "no
 import path from "node:path";
 
 import { animationEnums, members } from "./catalog.mjs";
+import { CURVE_Y_RANGE, MAX_SPEED_POINTS, SPEED_POINT_RANGE, curveSource, easeAt, seqOf, sliceSpeedCurve, splitCurve } from "./curves.mjs";
 import { EditError, invalid } from "./errors.mjs";
 import { renameRetrying } from "./rename.mjs";
 
@@ -285,6 +286,13 @@ const TrackCreate = model([
 const TrackUpdate = model([["name", nullable(Label), null], ["mute", nullable(strictBool), null], ["narration", nullable(strictBool), null], ["duck", nullable(strictBool), null]]);
 const TrackOrder = model([["track_ids", list(str({ min: 1, max: 64 }), { min: 1, max: 100 }), REQUIRED]]);
 
+// 曲线变速（curves.mjs）：x 是在截取的素材里的位置，从 0 走到 1；y 是那一刻的倍速
+const SpeedPoint = model([["x", Unit, REQUIRED], ["y", finiteFloat({ ge: SPEED_POINT_RANGE[0], le: SPEED_POINT_RANGE[1] }), REQUIRED]]);
+const CurveSpeed = model([["name", str({ strip: true, min: 1, max: 20 }), "自定义"], ["points", list(SpeedPoint, { min: 2, max: MAX_SPEED_POINTS }), REQUIRED]], {
+  after: ({ points }) => (points[0].x === 0 && points.at(-1).x === 1 && points.every((point, i) => i === 0 || point.x > points[i - 1].x)
+    ? null : "speed curve points must start at x=0, end at x=1 and keep increasing"),
+});
+
 const MediaSegmentCreate = model([
   ["path", MediaPath, REQUIRED],
   ["timeline", TimeRange, REQUIRED],
@@ -363,6 +371,7 @@ const SegmentUpdate = model([
   ["shadow", nullable(TextShadowOptions), null],
   ["bubble", nullable(TextBubbleOptions), null],
   ["text_effect_id", nullable(Label), null],
+  ["curve_speed", nullable(CurveSpeed), null],
 ]);
 
 const MaskCreate = model([
@@ -387,8 +396,19 @@ const KEYFRAME_PROPERTIES = [
   "transform_x", "transform_y", "position_x", "position_y", "scale_x", "scale_y", "uniform_scale",
   "rotation", "alpha", "volume", "brightness", "contrast", "saturation",
 ];
-const KeyframeCreate = model([["property", literal(KEYFRAME_PROPERTIES), REQUIRED], ["offset_us", TimeUs, REQUIRED], ["value", finiteFloat(), REQUIRED]]);
+// 关键帧曲线 [x1, y1, x2, y2]（curves.mjs）：从这一帧到下一帧怎么走；横坐标要在 0–1 里，时间才不会倒着走
+const CurveNumbers = list(finiteFloat({ ge: CURVE_Y_RANGE[0], le: CURVE_Y_RANGE[1] }), { min: 4, max: 4 });
+const KeyframeCurve = (value, loc, errors) => {
+  const curve = CurveNumbers(value, loc, errors);
+  if (curve === INVALID || (curve[0] >= 0 && curve[0] <= 1 && curve[2] >= 0 && curve[2] <= 1)) return curve;
+  return issue(errors, loc, "value_error", "Value error, curve x1 and x2 must be between 0 and 1");
+};
+const KeyframeCreate = model([
+  ["property", literal(KEYFRAME_PROPERTIES), REQUIRED], ["offset_us", TimeUs, REQUIRED], ["value", finiteFloat(), REQUIRED],
+  ["curve", nullable(KeyframeCurve), undefined],
+]);
 const KeyframeBatch = model([["keyframes", list(KeyframeCreate, { min: 1, max: 500 }), REQUIRED]]);
+const KeyframeCurveUpdate = model([["property", literal(KEYFRAME_PROPERTIES), REQUIRED], ["offset_us", TimeUs, REQUIRED], ["curve", nullable(KeyframeCurve), REQUIRED]]);
 
 const effectFields = [["effect_type", Label, REQUIRED], ["params", nullable(list(Percent, { max: 64 })), null]];
 const filterFields = [["filter_type", Label, REQUIRED], ["intensity", Percent, 100]];
@@ -576,19 +596,29 @@ function splitKeyframes(keyframes, offset) {
     left.push(...before.map((item) => ({ ...item })));
     right.push(...after.map((item) => ({ ...item, offset_us: item.offset_us - offset })));
     if (exact.length) {
-      const boundary = { ...exact[0] };
+      // 切口上的那一帧：左边是最后一帧，不用曲线；右边接着往下走
+      const { curve: _curve, ...boundary } = exact[0];
       left.push(boundary);
-      right.push({ ...boundary, offset_us: 0 });
+      right.push({ ...exact[0], offset_us: 0 });
     } else if (before.length && after.length) {
       const first = before.at(-1);
       const last = after[0];
       const ratio = (offset - first.offset_us) / (last.offset_us - first.offset_us);
-      const boundary = { property, offset_us: offset, value: first.value + (last.value - first.value) * ratio };
+      const boundary = { property, offset_us: offset, value: first.value + (last.value - first.value) * easeAt(first.curve, ratio) };
+      // 带曲线的那一段从切口切成两段曲线，切完两边动起来和原来一样
+      const [head, tail] = splitCurve(first.curve, ratio);
+      left[left.length - 1] = withCurve(left.at(-1), head);
       left.push(boundary);
-      right.push({ ...boundary, offset_us: 0 });
+      right.push(withCurve({ ...boundary, offset_us: 0 }, tail));
     }
   }
   return [left.sort(byPropertyThenOffset), right.sort(byPropertyThenOffset)];
+}
+
+/** 关键帧带上（或去掉）曲线：没有曲线就不写这个键。 */
+function withCurve(keyframe, curve) {
+  const { curve: _old, ...rest } = keyframe;
+  return curve ? { ...rest, curve } : rest;
 }
 
 function trackAny(project, trackId) {
@@ -665,7 +695,7 @@ const VIDEO_EFFECTS = ["VideoSceneEffectType", "VideoCharacterEffectType"];
 const AUDIO_EFFECTS = ["AudioSceneEffectType", "ToneEffectType", "SpeechToSongType"];
 const CLEARABLE = new Set([
   "effects", "filters", "animations", "transition", "fade", "mask", "chroma", "background_filling",
-  "mix_mode", "crop", "border", "background", "shadow", "bubble", "text_effect",
+  "mix_mode", "crop", "border", "background", "shadow", "bubble", "text_effect", "curve_speed",
 ]);
 const TEXT_ONLY_FIELDS = ["font_family", "bold", "italic", "underline", "opacity", "vertical", "letter_spacing",
   "line_spacing", "auto_wrapping", "max_line_width", "border", "background", "shadow", "bubble", "text_effect_id"];
@@ -1132,7 +1162,7 @@ export class ProjectStore {
     if (!Object.keys(changes).length) return project;
     const kind = current.kind;
     const has = (...keys) => keys.some((key) => Object.hasOwn(changes, key));
-    const nullable = new Set(["transform", "bubble", "text_effect_id"]);
+    const nullable = new Set(["transform", "bubble", "text_effect_id", "curve_speed"]);
     if (Object.entries(changes).some(([key, value]) => value === null && !nullable.has(key))) {
       throw invalid("SEGMENT_UPDATE_INVALID", "Only transform may be cleared with null");
     }
@@ -1159,6 +1189,19 @@ export class ProjectStore {
       throw invalid("SEGMENT_FIELD_MISMATCH", "Sticker clips only accept timeline and transform fields");
     }
 
+    // 曲线变速只给视频：套上时素材截取不变，成片时长按曲线重算，speed 记平均倍速（后面的换算照常规变速走）。
+    // 改成别的常规倍速就换回常规变速；看板裁剪时会带上原来的倍速，没变不算
+    let curveSpeed = current.curve_speed ?? null;
+    const curveChanged = has("curve_speed");
+    if (curveChanged) {
+      if (changes.curve_speed && kind !== "video") throw invalid("SEGMENT_FIELD_MISMATCH", "Curve speed requires a video clip");
+      if (changes.curve_speed && has("speed")) throw invalid("SEGMENT_UPDATE_INVALID", "curve_speed and speed cannot be set together");
+      curveSpeed = changes.curve_speed;
+      if (curveSpeed) changes.speed = 1 / seqOf(curveSpeed.points).factor;
+    } else if (curveSpeed && has("speed") && Math.abs(changes.speed - Number(current.speed ?? 1)) > 1e-9) {
+      curveSpeed = null;
+    }
+    delete changes.curve_speed;
     let timeline = changes.timeline ?? timeRange(current.timeline);
     let sourceData = current.source;
     const speed = Number(has("speed") ? changes.speed : current.speed ?? 1);
@@ -1167,6 +1210,7 @@ export class ProjectStore {
       if ((track.track_type === "audio") !== (info.kind === "audio")) {
         throw invalid("MEDIA_TRACK_MISMATCH", "Clip media type does not match track");
       }
+      if (curveSpeed && info.kind !== "video") throw invalid("SEGMENT_FIELD_MISMATCH", "Curve speed requires a video clip");
       if (info.kind === "image" && speed !== 1) throw invalid("SPEED_INVALID", "Still images do not support speed changes");
       if (has("path")) {
         changes.path = info.path;
@@ -1215,6 +1259,14 @@ export class ProjectStore {
     }
     if (has("color") && changes.color !== null) changes.color = changes.color.toUpperCase();
     const updated = { ...current, ...changes };
+    if (curveSpeed) updated.curve_speed = curveSpeed;
+    else delete updated.curve_speed;
+    // 套曲线变速改了时长：关键帧按比例跟着挪，不至于落到片段外面套不上。
+    // ponytail: 按比例挪，不按画面内容对齐；要关键帧粘在原来那一帧上，得用新旧曲线反算每一帧的位置
+    const stretched = updated.timeline.duration_us / current.timeline.duration_us;
+    if (curveChanged && updated.keyframes?.length && stretched !== 1) {
+      updated.keyframes = updated.keyframes.map((item) => ({ ...item, offset_us: Math.min(updated.timeline.duration_us, Math.round(item.offset_us * stretched)) }));
+    }
     for (const keyframe of updated.keyframes ?? []) {
       if (keyframe.offset_us > updated.timeline.duration_us) {
         throw invalid("KEYFRAME_OFFSET_INVALID", "Updated clip duration would move a keyframe outside the clip");
@@ -1289,12 +1341,22 @@ export class ProjectStore {
       second.timeline = { ...current.timeline, start_us: current.timeline.start_us + offset, duration_us: duration - offset };
       if (current.source) {
         const source = current.source;
-        const firstSource = pyRound(exactRatio(BigInt(source.duration_us) * BigInt(offset), BigInt(duration)));
+        // 曲线变速的切口按曲线找素材位置，两半各拿自己那一截曲线，倍速记各自的平均倍速
+        const curve = current.curve_speed?.points;
+        const firstSource = curve
+          ? pyRound(curveSource(curve, offset / duration) * source.duration_us)
+          : pyRound(exactRatio(BigInt(source.duration_us) * BigInt(offset), BigInt(duration)));
         if (firstSource <= 0 || firstSource >= source.duration_us) {
           throw invalid("SPLIT_OFFSET_INVALID", "Split would create an empty source range");
         }
         first.source = { ...source, duration_us: firstSource };
         second.source = { ...source, start_us: source.start_us + firstSource, duration_us: source.duration_us - firstSource };
+        if (curve) {
+          first.curve_speed = { ...current.curve_speed, points: sliceSpeedCurve(curve, 0, offset / duration) };
+          second.curve_speed = { ...current.curve_speed, points: sliceSpeedCurve(curve, offset / duration, 1) };
+          first.speed = firstSource / offset;
+          second.speed = (source.duration_us - firstSource) / (duration - offset);
+        }
       }
       [first.keyframes, second.keyframes] = splitKeyframes(current.keyframes ?? [], offset);
       const segments = (track.segments ?? []).flatMap((item) => (item.id === segmentId ? [first, second] : [item]));
@@ -1329,8 +1391,11 @@ export class ProjectStore {
         if (["brightness", "contrast", "saturation"].includes(property) && kind !== "video" && kind !== "image") {
           throw invalid("KEYFRAME_PROPERTY_INVALID", "Color keyframes require a video or image clip");
         }
-        keyframes = keyframes.filter((existing) => !(existing.property === property && existing.offset_us === item.offset_us));
-        keyframes.push({ property, offset_us: item.offset_us, value: item.value });
+        // 同一时间点覆盖时没给曲线就留着原来的
+        const same = (existing) => existing.property === property && existing.offset_us === item.offset_us;
+        const curve = item.curve !== undefined ? item.curve : keyframes.find(same)?.curve;
+        keyframes = keyframes.filter((existing) => !same(existing));
+        keyframes.push(withCurve({ property, offset_us: item.offset_us, value: item.value }, curve));
       }
       keyframes.sort(byPropertyThenOffset);
       const properties = new Set(keyframes.map((item) => item.property));
@@ -1338,6 +1403,24 @@ export class ProjectStore {
         throw invalid("KEYFRAME_PROPERTY_CONFLICT", "Uniform scale keyframes cannot be combined with axis scale keyframes");
       }
       return this.#replaceSegment(project, track.id, segmentId, { ...current, keyframes });
+    });
+  }
+
+  /** 设一个关键帧到下一帧之间的曲线（curve 是 null 就改回直线）；最后一帧后面没有下一帧，设不了。 */
+  async setKeyframeCurve(projectId, segmentId, request, { expectRevision } = {}) {
+    const [params, body] = check([RevisionParams, revisionInput(expectRevision)], [KeyframeCurveUpdate, request]);
+    const property = canonicalKeyframeProperty(body.property);
+    return this.#serial(projectId, async () => {
+      const project = await this.#expected(projectId, params.expect_revision);
+      const [track, current] = segmentLocation(project, segmentId);
+      const keyframes = current.keyframes ?? [];
+      const index = keyframes.findIndex((item) => item.property === property && item.offset_us === body.offset_us);
+      if (index < 0) throw storeError("KEYFRAME_NOT_FOUND", "Keyframe does not exist", 404);
+      if (body.curve && !keyframes.some((item) => item.property === property && item.offset_us > body.offset_us)) {
+        throw invalid("KEYFRAME_CURVE_INVALID", "The last keyframe has no next keyframe to curve toward");
+      }
+      const updated = keyframes.map((item, i) => (i === index ? withCurve(item, body.curve) : item));
+      return this.#replaceSegment(project, track.id, segmentId, { ...current, keyframes: updated });
     });
   }
 

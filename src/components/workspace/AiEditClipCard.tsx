@@ -1,7 +1,8 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { Quote, Scissors, Trash2, X } from "lucide-react-native";
-import type { EditProject, EditSegment } from "../../services/aiEdit";
+import type { AiEditClipEdit, EditProject, EditSegment } from "../../services/aiEdit";
+import { KeyframeCurveEditor, SpeedCurveEditor } from "./AiEditCurveEditors";
 import { clipDetail, findSegment, mediaIdFromPath } from "./aiEditModel";
 import { useBoard } from "./aiEditBoardContext";
 import {
@@ -71,6 +72,11 @@ function ClipBody({ projectNow, iconOnly }: { projectNow: () => EditProject | nu
     await flushHeld();
     return runEdit("clear_clip_feature", { clip_id: segment.id, feature });
   };
+  const curveEdit = (name: AiEditClipEdit) => async (args: Record<string, unknown>) => {
+    await flushHeld();
+    return runEdit(name, { clip_id: segment.id, ...args });
+  };
+  const keyed = (segment.keyframes ?? []).length > 1;
   return <>
     <View style={styles.detailHead}>
       <View style={[styles.detailDot, { backgroundColor: clipTone(segment) }]} />
@@ -91,6 +97,8 @@ function ClipBody({ projectNow, iconOnly }: { projectNow: () => EditProject | nu
         ? <TextEditor text={segment.text} editable={!lasting} onSave={saveText} />
         : <Text selectable style={styles.detailTitle}>{info.title}</Text>}
       {fields.length ? <FieldList fields={fields} version={project?.revision ?? 0} blocked={lasting} onCommit={commitField} onRefuse={(text) => toast(text)} /> : null}
+      {web && segment.kind === "video" ? <SpeedCurveEditor segment={segment} blocked={lasting} run={curveEdit("set_curve_speed")} /> : null}
+      {web && keyed ? <KeyframeCurveEditor segment={segment} blocked={lasting} run={curveEdit("set_keyframe_curve")} /> : null}
       {info.rows.filter((row) => !covered.has(row.label)).map((row, index) => <View key={index} style={styles.detailRow}>
         <Text style={styles.detailLabel}>{row.label}</Text>
         <View style={styles.detailValueBox}>
