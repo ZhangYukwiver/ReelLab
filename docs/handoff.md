@@ -29,7 +29,7 @@
 
 4. `shell.openExternal("reellab://inbox")`。
 5. 放之前先用 `app.getApplicationNameForProtocol("reellab://")` 看装没装；返回空串就是没装，不往收件箱写，
-   提示用户去 https://github.com/ZhangYukwiver/ReelLab/releases/latest 下载。
+   提示用户去 https://github.com/ZhangYukwiver/SmartCut/releases/latest 下载。
 
 ## 拆片工坊怎么收
 

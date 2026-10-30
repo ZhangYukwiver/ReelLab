@@ -52,7 +52,7 @@
     "publish": {
       "provider": "github",
       "owner": "ZhangYukwiver",
-      "repo": "ReelLab",
+      "repo": "SmartCut",
       "releaseType": "release"
     },
     "protocols": [
