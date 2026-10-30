@@ -42,7 +42,7 @@
   },
   "build": {
     "appId": "com.zhangyukwiver.reellab",
-    "productName": "ReelLab",
+    "productName": "SmartCut",
     "extraMetadata": {
       "main": "desktop/main.mjs"
     },
@@ -57,7 +57,7 @@
     },
     "protocols": [
       {
-        "name": "ReelLab",
+        "name": "SmartCut",
         "schemes": [
           "reellab"
         ]
@@ -89,7 +89,7 @@
         }
       ],
       "icon": "build/icon.ico",
-      "artifactName": "ReelLab-Setup-${version}.${ext}"
+      "artifactName": "SmartCut-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -121,7 +121,7 @@
         }
       ],
       "icon": "build/icon.icns",
-      "artifactName": "ReelLab-${version}-${arch}.${ext}"
+      "artifactName": "SmartCut-${version}-${arch}.${ext}"
     }
   }
 }

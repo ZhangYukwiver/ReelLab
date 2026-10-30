@@ -14,7 +14,9 @@ import { startStaticServer } from "./staticServer.mjs";
 import { isSameOriginUrl } from "./windowPolicy.mjs";
 
 const APP_ID = "com.zhangyukwiver.reellab";
-const APP_NAME = "ReelLab";
+const APP_NAME = "SmartCut";
+// ponytail: 改名前叫 ReelLab，数据目录和送件方的收件箱（docs/handoff.md）都认这个路径，不跟着改
+const DATA_DIRECTORY_NAME = "ReelLab";
 const WINDOW_TITLE = "拆片工坊";
 const PROTOCOL = "reellab";
 const RELEASES_URL = "https://github.com/ZhangYukwiver/SmartCut/releases/latest";
@@ -37,7 +39,7 @@ const pendingHandoffs = [];
 // 通知对象被回收后点它就没反应了，显示期间留着引用
 const liveNotifications = new Set();
 
-const userDataDirectory = path.join(app.getPath("appData"), APP_NAME);
+const userDataDirectory = path.join(app.getPath("appData"), DATA_DIRECTORY_NAME);
 mkdirSync(userDataDirectory, { recursive: true });
 app.setPath("userData", userDataDirectory);
 app.setPath("sessionData", userDataDirectory);

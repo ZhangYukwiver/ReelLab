@@ -9,12 +9,12 @@
 
 ## 安装
 
-**macOS（Apple Silicon）**：下载 `ReelLab-<版本>-arm64.dmg`，把「ReelLab」拖进「应用程序」。安装包没有开发者签名，首次打开前要在终端执行一次：
+**macOS（Apple Silicon）**：下载 `SmartCut-<版本>-arm64.dmg`，把「SmartCut」拖进「应用程序」。安装包没有开发者签名，首次打开前要在终端执行一次：
 
 ```bash
-xattr -cr "/Applications/ReelLab.app"
+xattr -cr "/Applications/SmartCut.app"
 ```
 
-不执行会提示应用已损坏。Mac 版没法在应用里自动安装更新，每个新版本都按这个步骤手动替换。
+不执行会提示应用已损坏。Mac 版没法在应用里自动安装更新，每个新版本都按这个步骤手动替换。应用从 ReelLab 改名成了 SmartCut，装好新版后把「应用程序」里旧的 ReelLab 删掉，数据和设置都还在。
 
-**Windows**：下载 `ReelLab-Setup-<版本>.exe` 安装。出现 SmartScreen 提示时，点「更多信息」，再点「仍要运行」。之后的新版本可以直接在应用里更新。
+**Windows**：下载 `SmartCut-Setup-<版本>.exe` 安装。出现 SmartScreen 提示时，点「更多信息」，再点「仍要运行」。之后的新版本可以直接在应用里更新。
