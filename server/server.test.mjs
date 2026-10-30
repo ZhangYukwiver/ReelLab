@@ -35,7 +35,7 @@ async function startPaired(prefix) {
   return { dataDirectory, runtime, call, headers };
 }
 
-describe("ReelLab server", () => {
+describe("SmartCut server", () => {
   it("keeps AI edit behind pairing except key-protected media files, and stores everything under ai-edit/", async () => {
     // 草稿箱指到临时目录，不碰本机真实的剪映草稿
     vi.stubEnv("JY_JIANYING_DRAFTS_ROOT", await mkdtemp(path.join(tmpdir(), "ai-edit-drafts-")));

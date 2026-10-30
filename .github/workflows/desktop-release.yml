@@ -76,16 +76,16 @@ jobs:
       - name: Verify Apple Silicon package
         if: runner.os == 'macOS'
         run: |
-          node scripts/verify-release-package.mjs 'release/mac-arm64/ReelLab.app/Contents/Resources'
-          test "$(lipo -archs 'release/mac-arm64/ReelLab.app/Contents/MacOS/ReelLab')" = arm64
+          node scripts/verify-release-package.mjs 'release/mac-arm64/SmartCut.app/Contents/Resources'
+          test "$(lipo -archs 'release/mac-arm64/SmartCut.app/Contents/MacOS/SmartCut')" = arm64
       - name: Upload Windows installer
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: desktop-windows-x64
           path: |
-            release/ReelLab-Setup-*.exe
-            release/ReelLab-Setup-*.exe.blockmap
+            release/SmartCut-Setup-*.exe
+            release/SmartCut-Setup-*.exe.blockmap
             release/latest.yml
           if-no-files-found: error
           retention-days: 14
@@ -95,8 +95,8 @@ jobs:
         with:
           name: desktop-macos-arm64
           path: |
-            release/ReelLab-*-arm64.dmg
-            release/ReelLab-*-arm64.zip
+            release/SmartCut-*-arm64.dmg
+            release/SmartCut-*-arm64.zip
             release/latest-mac.yml
           if-no-files-found: error
           retention-days: 14
@@ -132,10 +132,10 @@ jobs:
           const { version } = JSON.parse(fs.readFileSync('package.json', 'utf8'));
           assert.equal(process.env.GITHUB_REF_NAME, `v${version}`);
           const expected = [
-            `ReelLab-${version}-arm64.dmg`,
-            `ReelLab-${version}-arm64.zip`,
-            `ReelLab-Setup-${version}.exe`,
-            `ReelLab-Setup-${version}.exe.blockmap`,
+            `SmartCut-${version}-arm64.dmg`,
+            `SmartCut-${version}-arm64.zip`,
+            `SmartCut-Setup-${version}.exe`,
+            `SmartCut-Setup-${version}.exe.blockmap`,
             'latest-mac.yml',
             'latest.yml',
           ].sort();

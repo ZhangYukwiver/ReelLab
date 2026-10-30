@@ -1,4 +1,4 @@
-# 拆片工坊 ReelLab
+# 拆片工坊 SmartCut
 
 说说想怎么剪，AI 在时间线上帮你剪好，再一键放进剪映草稿箱精修；看到一条好视频，交给它拆成可复用的拍法。
 
@@ -21,8 +21,8 @@
 
 到 [Releases](https://github.com/ZhangYukwiver/SmartCut/releases/latest) 下载：
 
-- **macOS（Apple Silicon）**：`ReelLab-<版本>-arm64.dmg`，拖进「应用程序」。安装包没有开发者签名，第一次打开前在终端执行一次 `xattr -cr "/Applications/ReelLab.app"`，不然会提示应用已损坏。Mac 版不能在应用里自动更新，新版本按同样步骤替换。
-- **Windows**：`ReelLab-Setup-<版本>.exe`。出现 SmartScreen 提示时点「更多信息」再点「仍要运行」。之后的新版本可以在应用里直接更新。
+- **macOS（Apple Silicon）**：`SmartCut-<版本>-arm64.dmg`，拖进「应用程序」。安装包没有开发者签名，第一次打开前在终端执行一次 `xattr -cr "/Applications/SmartCut.app"`，不然会提示应用已损坏。Mac 版不能在应用里自动更新，新版本按同样步骤替换。
+- **Windows**：`SmartCut-Setup-<版本>.exe`。出现 SmartScreen 提示时点「更多信息」再点「仍要运行」。之后的新版本可以在应用里直接更新。
 
 关掉窗口只是收进托盘（macOS 是菜单栏），剪辑、生成和解析在后台接着跑；要完全退出，在图标菜单里点「退出」。
 
@@ -47,7 +47,7 @@ npm run desktop:build:mac
 
 ## 数据放在哪
 
-桌面版的数据目录是 `<appData>/ReelLab`（macOS `~/Library/Application Support/ReelLab`，Windows `%APPDATA%\ReelLab`）：
+桌面版的数据目录沿用改名前的 `<appData>/ReelLab`（macOS `~/Library/Application Support/ReelLab`，Windows `%APPDATA%\ReelLab`）：
 
 - `data/ai-edit/`：剪辑会话、工程、素材库（`media/`）、工程存档（`checkpoints/`）、网页片段（`pages/`，技能带的共用文件在 `pages/_skills/`）、导出的 MP4 和工程包（`renders/`）、技能（`skills.json`、`skills/`、`skill-work/`）
 - `data/analyses.json`：解析库
