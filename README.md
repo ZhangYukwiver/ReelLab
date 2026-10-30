@@ -19,7 +19,7 @@
 
 ## 安装
 
-到 [Releases](https://github.com/ZhangYukwiver/ReelLab/releases/latest) 下载：
+到 [Releases](https://github.com/ZhangYukwiver/SmartCut/releases/latest) 下载：
 
 - **macOS（Apple Silicon）**：`ReelLab-<版本>-arm64.dmg`，拖进「应用程序」。安装包没有开发者签名，第一次打开前在终端执行一次 `xattr -cr "/Applications/ReelLab.app"`，不然会提示应用已损坏。Mac 版不能在应用里自动更新，新版本按同样步骤替换。
 - **Windows**：`ReelLab-Setup-<版本>.exe`。出现 SmartScreen 提示时点「更多信息」再点「仍要运行」。之后的新版本可以在应用里直接更新。

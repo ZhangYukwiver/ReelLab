@@ -17,7 +17,7 @@ const APP_ID = "com.zhangyukwiver.reellab";
 const APP_NAME = "ReelLab";
 const WINDOW_TITLE = "拆片工坊";
 const PROTOCOL = "reellab";
-const RELEASES_URL = "https://github.com/ZhangYukwiver/ReelLab/releases/latest";
+const RELEASES_URL = "https://github.com/ZhangYukwiver/SmartCut/releases/latest";
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectDirectory = path.resolve(moduleDirectory, "..");
 const ICON_PATH = path.join(projectDirectory, "build", "icon.png");
@@ -265,7 +265,7 @@ async function launch() {
     // 直连读取，只把安装包改走加速线路，下完 electron-updater 会按 sha512 校验。
     // ponytail: 写死一条第三方线路，失效就换一条
     session.fromPartition("electron-updater", { cache: false }).webRequest.onBeforeRequest(
-      { urls: ["https://github.com/ZhangYukwiver/ReelLab/releases/download/*"] },
+      { urls: ["https://github.com/ZhangYukwiver/SmartCut/releases/download/*"] },
       ({ url }, callback) => callback(url.endsWith(".exe") ? { redirectURL: `https://gh-proxy.com/${url}` } : {}),
     );
   }
